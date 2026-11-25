@@ -1,6 +1,6 @@
 # Underlord
 
-A browser dungeon keeper. Dig earth, bank gold, lay rooms, attract creatures, research spells, and hold the heart against heroes, a rival keeper, or both. The view is fully 3D: it opens on a classic isometric angle, and you can pan, tilt, zoom, and orbit freely. Terrain uses CC0 PBR maps on bevelled blocks, with torches, a soft key light, bloom, and a warm grade. The graphics setting in the top bar is Low, Med, or High. Med is the default: instanced PBR blocks, bloom, and a warm grade, with one directional light and a few torches. High adds a shadow map and ambient occlusion. Low skips post-processing. The choice is remembered in this browser.
+A browser dungeon keeper. Dig earth, bank gold, lay rooms, attract creatures, research spells, and hold the heart against heroes, a rival keeper, or both. The view is fully 3D: it opens on a classic isometric angle, and you can pan, tilt, zoom, and orbit freely. Terrain uses CC0 PBR maps on bevelled blocks. The dungeon stays dim and moonlit, with warm torch pools, a camera fill, and a light grade so walls, gold, and creatures stay readable. The graphics setting in the top bar is Low, Med, or High. Med is the default: instanced PBR blocks, a little bloom, and that grade, with a cool fill plus the nearest torches. High adds a shadow map and ambient occlusion. Low skips post-processing. The choice is remembered in this browser.
 
 ```bash
 npm install

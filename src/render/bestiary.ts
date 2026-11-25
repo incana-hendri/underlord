@@ -19,7 +19,7 @@ interface Cast {
 }
 
 const CAST: Record<string, Cast> = {
-  imp: { url: '/models/imp.glb', height: 0.95, tint: 0xd24a38, yaw: Math.PI },
+  imp: { url: '/models/imp.glb', height: 1.45, tint: 0xe25a3c, yaw: Math.PI },
   goblin: { url: '/models/human.glb', height: 0.78, tint: 0x6a9a48, yaw: Math.PI },
   warlock: { url: '/models/human.glb', height: 0.95, tint: 0x7a48a0, yaw: Math.PI },
   troll: { url: '/models/human.glb', height: 1.15, tint: 0x4e7a40, yaw: Math.PI },
@@ -75,8 +75,9 @@ function tintMaterial(root: THREE.Object3D, tint: number): void {
     mesh.material = list.map((mat) => {
       const next = mat.clone()
       if (next instanceof THREE.MeshStandardMaterial || next instanceof THREE.MeshPhongMaterial || next instanceof THREE.MeshLambertMaterial) {
-        next.color.lerp(color, 0.55)
-        next.emissive = new THREE.Color(tint).multiplyScalar(0.22)
+        next.color.lerp(color, 0.18)
+        next.emissive = new THREE.Color(tint)
+        next.emissiveIntensity = 0.22
       }
       return next
     })
