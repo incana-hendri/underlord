@@ -763,7 +763,7 @@ function beginImpWork(world: World, c: Creature): void {
     c.job = ''
     return
   }
-  if (c.job === 'gold') {
+    if (c.job === 'gold') {
     const take = Math.min(200, t.gold)
     t.gold -= take
     c.carryGold = take
@@ -773,6 +773,7 @@ function beginImpWork(world: World, c: Creature): void {
     c.path = []
     c.pathI = 0
     if (t.gold <= 0) t.gold = 0
+    world.animDirty = true
     ping(world, 'gold')
     return
   }
@@ -903,29 +904,36 @@ function deposit(world: World, owner: number, amount: number): number {
 }
 
 function haulGold(world: World, c: Creature, dt: number): void {
+  const k = keeper(world, c.owner)
+  if (!k) return
   const treas = nearestRoomTile(world, c.owner, 'treasury', c.x, c.y)
-  if (treas < 0) {
+  const space = goldCap(world, c.owner) - k.gold
+  const dest = treas >= 0 ? treas : space > 0 && k.heart >= 0 ? k.heart : -1
+  if (dest < 0) {
     const i = tindex(world, c)
     if (i >= 0) world.tiles[i]!.gold += c.carryGold
-    say(world, 'need_treasury', 'Gold is piling up. Build a treasury.', 'need_treasury', -1, 12)
+    say(world, 'need_treasury', 'Gold is piling up. Build a treasury.', 'need_treasury', k.heart, 12)
     c.carry = ''
     c.carryGold = 0
     c.path = []
     c.pathI = 0
+    touch(world)
     return
   }
   const here = tindex(world, c)
-  if (here === treas || (here >= 0 && world.tiles[here]!.room === 'treasury' && world.tiles[here]!.owner === c.owner)) {
+  const tile = here >= 0 ? world.tiles[here]! : null
+  const inTreasury = !!tile && treas >= 0 && tile.room === 'treasury' && tile.owner === c.owner
+  if (here === dest || inTreasury) {
     const left = deposit(world, c.owner, c.carryGold)
-    c.carryGold = left
-    if (left > 0) {
-      if (here >= 0) world.tiles[here]!.gold += left
-      c.carryGold = 0
-    }
+    if (left > 0 && here >= 0) world.tiles[here]!.gold += left
+    c.carryGold = 0
     c.carry = ''
+    c.path = []
+    c.pathI = 0
+    world.animDirty = true
     return
   }
-  if (c.pathI >= c.path.length) route(world, c, treas, false)
+  if (c.pathI >= c.path.length) route(world, c, dest, false)
   moveAlong(world, c, dt)
 }
 
@@ -1352,6 +1360,20 @@ function fightCreature(world: World, c: Creature, foe: Creature, dt: number): vo
     }
     return
   }
+  if (d < range + 1.35) {
+    const step = Math.min(moveSpeed(c) * dt, Math.max(0, d - range * 0.8))
+    const len = d || 1
+    const nx = c.x + ((foe.x - c.x) / len) * step
+    const ny = c.y + ((foe.y - c.y) / len) * step
+    const stand = tileAt(world, Math.floor(nx), Math.floor(ny))
+    if (stand && canStand(stand, spec.flying) && !doorBlocks(stand, c.owner)) {
+      c.x = nx
+      c.y = ny
+      c.facing = Math.atan2(foe.x - c.x, foe.y - c.y)
+      c.path = []
+      return
+    }
+  }
   if (c.think <= 0) {
     c.think = 0.45
     const ti = tindex(world, foe)
@@ -1376,6 +1398,18 @@ function tickMinion(world: World, c: Creature, dt: number): void {
   }
   const k = keeper(world, c.owner)
   if (!k) return
+  if (c.mode === 'research') {
+    const i = tindex(world, c)
+    const room = i >= 0 ? roomOf(world, i) : null
+    if (!room || room.type !== 'library' || !k.researchTarget) c.mode = ''
+    else return
+  }
+  if (c.mode === 'craft') {
+    const i = tindex(world, c)
+    const room = i >= 0 ? roomOf(world, i) : null
+    if (!room || room.type !== 'workshop' || !k.orders.some((o) => o.status === 'building')) c.mode = ''
+    else return
+  }
   if (c.mode === 'eat') {
     c.workT -= dt
     if (c.workT <= 0) {
@@ -1572,12 +1606,14 @@ function tickPayday(world: World, dt: number): void {
     if (k.paydayT > 0) continue
     k.paydayT = world.level.payday
     let broke = false
+    let paid = 0
     for (const c of world.creatures) {
       if (c.owner !== k.id || c.dead || c.kind === 'imp' || c.imprisoned) continue
       const wage = Math.round(species(c.kind).wage * (1 + (c.level - 1) * 0.45))
       if (wage <= 0) continue
       if (k.gold >= wage) {
         k.gold -= wage
+        paid++
         c.happiness = Math.min(100, c.happiness + 5)
         c.anger = Math.max(0, c.anger - 8)
       } else {
@@ -1586,6 +1622,7 @@ function tickPayday(world: World, dt: number): void {
         c.anger += 14
       }
     }
+    if (paid > 0) say(world, 'payday', 'Payday. Your creatures take their wages.', null, k.heart, 8)
     if (broke) say(world, 'unpaid', 'Your creatures are unpaid. They will not forget.', 'unpaid', k.heart, 20)
     if (k.gold < 180) say(world, 'low_gold', 'Your gold is running thin.', 'low_gold', k.heart, 25)
   }
@@ -1684,7 +1721,7 @@ function tryAttract(world: World, k: Keeper): void {
   spawnCreature(world, pickId, k.id, gx(world.width, p) + 0.5, gy(world.width, p) + 0.5)
   world.stats.attracted++
   const name = species(pickId).name
-  say(world, `join_${pickId}`, `A ${name} joins your dungeon.`, null, p, 4)
+  say(world, `join_${pickId}`, `A ${name} joins your dungeon.`, 'arrived', p, 4)
   ping(world, 'arrive')
 }
 
@@ -2233,6 +2270,8 @@ export function tagTiles(world: World, owner: number, x0: number, y0: number, x1
     }
   }
   world.animDirty = true
+  world.mapRevision++
+  world.assignAcc = 1
 }
 
 export function summonImp(world: World, owner: number): boolean {
@@ -2268,6 +2307,7 @@ export function slap(world: World, id: number): void {
   c.happiness = Math.max(0, c.happiness - 12)
   c.anger = Math.min(100, c.anger + 17)
   ping(world, 'slap')
+  say(world, `slap_${c.id}`, `You slap the ${species(c.kind).name}.`, null, tindex(world, c), 0.35)
   if (c.anger > 78) say(world, 'angry', `${species(c.kind).name} is furious.`, 'angry', tindex(world, c), 8)
 }
 

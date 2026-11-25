@@ -13,11 +13,11 @@ Open the URL Vite prints (it uses port **41773**). No account and no API key are
 
 | Input | Action |
 | --- | --- |
-| Left click | Tag earth, gold, or gems to dig. Tag rock to reinforce. Pick up a creature. |
+| The hand | A red hand follows the cursor over the map. The panel names the tile and any creature under it. |
+| Left click | Tag earth, gold, or gems for digging. Tag rock to reinforce. Pick up a creature. Click another to carry a stack. |
 | Left drag | Mark a rectangle (dig, room, or sell, depending on the tool). |
-| Right click | Slap the creature under the cursor, or the one you are holding. |
-| Drop | Left click a tile while holding a creature. |
-| Shift + drop on a Temple | Sacrifice. A temple of 9 or more tiles can call a Horned Reaper. |
+| Right click | Drop the creature on top of the hand. With an empty hand, slap the creature under the cursor. |
+| Shift + right click on a Temple | Sacrifice the creature you are dropping. A temple of 9 or more tiles can call a Horned Reaper. |
 | WASD / arrows | Pan |
 | Q / E | Rotate |
 | R / F | Tilt |
@@ -48,32 +48,38 @@ The title screen also accepts a text map. Legend: `#` rock, `R` reinforced rock,
 
 ## Feature status
 
+The loop below is what a browser session can actually do. Anything marked partial is in the simulation, but thinner than the original game.
+
 | Feature | Status |
 | --- | --- |
-| Tile map: rock, earth, gold, gems, water, lava, claimed and open floor, reinforced walls, rooms, heart, portal | Done |
+| Tile map: rock, earth, gold, gems, water, lava, claimed floor, reinforced walls, heart, portal | Done |
 | Instanced terrain, fog of war, memory of explored ground | Done |
-| Hand: click and drag dig, pickup, drop, slap | Done |
-| Imps: dig, mine, claim, reinforce, haul gold, drag bodies, deliver traps and doors | Done |
+| Hand of Evil: visible hand, hover readout, click and drag tagging, stack of carried creatures, right-click drop, slap | Done |
+| Imps walk, dig, mine, claim, reinforce, and carry gold to a treasury or the heart vault | Done |
+| Dig and reinforce tags drawn on the tile | Done |
+| Create Imp, from the spell list or the creature list | Done |
+| Paint rooms on claimed floor; gold is spent; the room slab appears | Done |
+| Treasury capacity and the heart's own vault | Done |
+| Hatchery grows chickens that show on the tiles | Done |
+| Portal attracts a creature once a lair (and any other required rooms) exists | Done |
+| Creatures wander, eat, sleep, train, research, and manufacture when the room and need line up | Done |
+| Payday takes wages, or angers them if the vault is empty | Done |
+| Hunger, happiness, anger, and leaving through the portal | Done |
+| Hero parties path, fight, and bash toward the heart. The rival keeper tags, digs, and builds | Done |
+| Melee and ranged strikes, health bars, unconscious bodies, win and lose | Done |
+| Spell list from Create Imp through Armageddon | Done — targeted spells are cast on the tile you click after selecting them |
+| Traps and doors, forged in a workshop and carried by imps | Done in the simulation; the workshop has to be built and researched gear unlocked |
 | Job priority list | Done |
-| Gold, treasury capacity, wages, infinite gem veins | Done |
-| All 14 rooms, with size and enclosure efficiency | Done |
-| Portal attraction from the rooms you have built | Done |
-| Hunger, sleep, pay, happiness, anger, leaving | Done |
-| Training, library research, workshop manufacture | Done |
-| Melee and ranged combat, unconscious, prison, torture conversion | Done |
-| Spell list from Create Imp through Armageddon | Done |
-| Traps and doors, carried by imps | Done |
-| Hero parties, thieves, Lord of the Land | Done |
-| Rival keeper that digs, builds, attracts, and attacks | Done |
 | Five JSON levels, level select, text-map custom game | Done |
 | Side panel, minimap, messages, pause, speed, save/load | Done |
-| Free pan, tilt, zoom, and orbit, clamped above the floor | Done |
+| Free pan, tilt, zoom, and orbit. Ordinary orders do not yank the camera | Done |
 | Torch-style point lights, lava glow, pulsing heart | Done |
-| Kokoro mentor lines, optional Grok Voice, Web Speech fallback | Done |
+| Kokoro mentor lines on real events, optional Grok Voice, Web Speech fallback | Done |
 | Kenney CC0 impacts mixed with original synthesis | Done |
+| Prison drags, torture conversion, temple sacrifice, graveyard skeletons | Done in the simulation; they need the rooms and a body |
 | Possess (first person on one creature) | Partial — researched spell, WASD and click, no separate weapon view |
 | Scavenger room | Partial — pays gold to steal or conjure one chosen species |
-| Level editor | Partial — text map, not a painted editor |
+| Level editor | Partial — text map, not a painted editor. A custom map with a gate sends a hero party at 18 seconds |
 | Flow-field pathfinding | Not used — A* is enough for these army sizes |
 | Music | Not included, on purpose |
 
@@ -81,10 +87,13 @@ The title screen also accepts a text map. Legend: `#` rock, `R` reinforced rock,
 
 ```bash
 npm test
+npm run e2e
 npm run lint
 ```
 
-Vitest covers pathfinding (including blocked corners), digging, gold haul, room merge and sale, payday anger, attraction, combat, lightning, narration provider order, and a smoke tick of every campaign map.
+Vitest covers pathfinding (including blocked corners), digging, gold hauled to a treasury or the heart vault, room merge and sale, payday, attraction, combat, hero movement, win and lose, lightning, narration provider order, and a smoke tick of every campaign map.
+
+`npm run e2e` drives Chromium: tag a tile and wait until an imp digs it, watch gold rise, pay for a room, pick up an imp and drop it, cast Create Imp, attract a creature, grow a chicken, watch the rival work, and wait for the first hero party.
 
 ## Narration
 

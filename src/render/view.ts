@@ -127,9 +127,12 @@ export class DungeonView {
   private hearts: THREE.Group[] = []
   private lights: THREE.PointLight[] = []
   private hover = new THREE.Mesh(
-    new THREE.RingGeometry(0.38, 0.5, 4),
+    new THREE.RingGeometry(0.42, 0.52, 24),
     new THREE.MeshBasicMaterial({ color: 0xe6c878, side: THREE.DoubleSide }),
   )
+  private hand = buildHand()
+  private tagMesh!: THREE.InstancedMesh
+  private chickenMesh!: THREE.InstancedMesh
   private banner = new THREE.Mesh(
     new THREE.ConeGeometry(0.18, 0.7, 4),
     new THREE.MeshBasicMaterial({ color: 0xc62838 }),
@@ -164,6 +167,8 @@ export class DungeonView {
     this.hover.rotation.x = -Math.PI / 2
     this.hover.visible = false
     this.scene.add(this.hover)
+    this.hand.visible = false
+    this.scene.add(this.hand)
     this.banner.visible = false
     this.scene.add(this.banner)
   }
@@ -210,11 +215,11 @@ export class DungeonView {
     return this.dist
   }
 
-  update(world: World, dt: number, hover: { x: number; y: number } | null, held: Creature | null): void {
+  update(world: World, dt: number, hover: { x: number; y: number } | null, held: Creature[]): void {
     this.ensure(world)
     this.clock += dt
     this.animAcc += dt
-    if (world.mapRevision !== this.lastMap || world.visRevision !== this.lastVis || (world.animDirty && this.animAcc > 0.1)) {
+    if (world.mapRevision !== this.lastMap || world.visRevision !== this.lastVis || (world.animDirty && this.animAcc > 0.08)) {
       this.syncMap(world)
       world.animDirty = false
       this.animAcc = 0
@@ -222,9 +227,12 @@ export class DungeonView {
       this.lastVis = world.visRevision
     }
     this.syncActors(world, dt, held, hover)
+    this.syncChickens(world)
     this.syncLights(world)
     this.hover.visible = !!hover
     if (hover) this.hover.position.set(hover.x + 0.5, 0.22, hover.y + 0.5)
+    const slapping = world.creatures.some((c) => c.slap > 7.15)
+    this.placeHand(world, hover, slapping)
     const k = world.keepers[1]
     if (k && k.rallyT > 0) {
       this.banner.visible = true
@@ -248,8 +256,10 @@ export class DungeonView {
 
   pick(clientX: number, clientY: number, world: World): { x: number; y: number; creatureId: number } | null {
     const rect = this.renderer.domElement.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) return null
     this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1
     this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1
+    this.camera.updateMatrixWorld(true)
     this.ray.setFromCamera(this.pointer, this.camera)
     const actors = [...this.actors.values()].filter((g) => g.visible)
     const hits = this.ray.intersectObjects(actors, true)
@@ -264,9 +274,33 @@ export class DungeonView {
       }
     }
     const tile = this.pickTile(this.ray.ray, world)
-    if (!tile && !creatureId) return null
-    if (creatureId && (!tile || creatureDist < 80)) return { x: tile?.x ?? 0, y: tile?.y ?? 0, creatureId }
-    return tile ? { ...tile, creatureId: 0 } : null
+    if (tile && creatureId && creatureDist + 0.2 < tile.dist) return { x: tile.x, y: tile.y, creatureId }
+    if (tile) {
+      const near = this.creatureNear(world, tile.x, tile.y, clientX, clientY)
+      return { x: tile.x, y: tile.y, creatureId: near || (creatureId && creatureDist < tile.dist ? creatureId : 0) }
+    }
+    if (!creatureId) return null
+    const c = world.creatures.find((cr) => cr.id === creatureId)
+    if (!c) return null
+    return { x: Math.floor(c.x), y: Math.floor(c.y), creatureId }
+  }
+
+  private creatureNear(world: World, x: number, y: number, clientX: number, clientY: number): number {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    let best = 0
+    let bestD = 36
+    for (const c of world.creatures) {
+      if (c.dead || c.held || c.carried) continue
+      if (Math.abs(c.x - (x + 0.5)) > 1.2 || Math.abs(c.y - (y + 0.5)) > 1.2) continue
+      const p = this.project(c.x, 0.55, c.y)
+      if (!p) continue
+      const d = Math.hypot(rect.left + p.x - clientX, rect.top + p.y - clientY)
+      if (d < bestD) {
+        bestD = d
+        best = c.id
+      }
+    }
+    return best
   }
 
   project(x: number, y: number, z: number): { x: number; y: number } | null {
@@ -300,12 +334,23 @@ export class DungeonView {
     this.roomMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3)
     this.roomMesh.frustumCulled = false
     this.nuggetMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.16, 0), new THREE.MeshLambertMaterial({ color: 0xffd56a, emissive: 0x5a3a00 }), cap)
-    this.markMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(0.12, 0.38, 4), new THREE.MeshBasicMaterial({ color: 0xff4040 }), cap)
+    this.markMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(0.2, 0.72, 5), new THREE.MeshBasicMaterial({ color: 0xffffff }), cap)
+    this.markMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3)
+    this.tagMesh = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.94, 0.07, 0.94),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.78, depthWrite: false }),
+      cap,
+    )
+    this.tagMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3)
+    this.tagMesh.renderOrder = 2
+    this.chickenMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(0.12, 0.22, 5), new THREE.MeshLambertMaterial({ color: 0xfff0b0, emissive: 0x5a4010 }), 200)
+    this.chickenMesh.frustumCulled = false
+    this.chickenMesh.count = 0
     this.doorMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.28, 1.15, 0.9), lam(maps.wood), Math.min(cap, 400))
     this.doorMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.min(cap, 400) * 3), 3)
     this.trapMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.18, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }), Math.min(cap, 400))
     this.trapMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.min(cap, 400) * 3), 3)
-    for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.doorMesh, this.trapMesh]) {
+    for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.tagMesh, this.doorMesh, this.trapMesh, this.chickenMesh]) {
       m.frustumCulled = false
       m.count = 0
       this.scene.add(m)
@@ -325,7 +370,7 @@ export class DungeonView {
     return 0.16
   }
 
-  private pickTile(ray: THREE.Ray, world: World): { x: number; y: number } | null {
+  private pickTile(ray: THREE.Ray, world: World): { x: number; y: number; dist: number } | null {
     let x = Math.floor(ray.origin.x)
     let z = Math.floor(ray.origin.z)
     const stepX = ray.direction.x >= 0 ? 1 : -1
@@ -340,7 +385,14 @@ export class DungeonView {
       const y0 = ray.origin.y + ray.direction.y * t
       const y1 = ray.origin.y + ray.direction.y * tNext
       const h = this.column(world, x, z)
-      if (h >= 0 && Math.max(y0, y1) >= 0 && Math.min(y0, y1) <= h) return { x, y: z }
+      if (h >= 0 && Math.max(y0, y1) >= 0 && Math.min(y0, y1) <= h) {
+        let dist = t
+        if (Math.abs(ray.direction.y) > 1e-6) {
+          const th = (Math.min(h, Math.max(y0, y1)) - ray.origin.y) / ray.direction.y
+          if (th >= t - 1e-4 && th <= tNext + 1e-4) dist = th
+        }
+        return { x, y: z, dist: Math.max(0, dist) }
+      }
       if (tNext > 220) return null
       if (tMaxX < tMaxZ) {
         t = tMaxX
@@ -418,11 +470,21 @@ export class DungeonView {
         this.nuggetMesh.setMatrixAt(nuggets++, DUMMY.matrix)
       }
       if (t.tag) {
-        DUMMY.position.set(x + 0.5, (t.terrain === Terrain.Rock ? 2.2 : 1.7), z + 0.5)
+        const top = t.terrain === Terrain.Rock ? 2.15 : t.terrain === Terrain.Floor ? 0.2 : 1.55 * (1 - t.dig * 0.7)
+        DUMMY.position.set(x + 0.5, top + 0.08, z + 0.5)
         DUMMY.scale.set(1, 1, 1)
-        DUMMY.rotation.set(0, Math.PI / 4, 0)
+        DUMMY.rotation.set(0, 0, 0)
         DUMMY.updateMatrix()
-        this.markMesh.setMatrixAt(marks++, DUMMY.matrix)
+        this.tagMesh.setMatrixAt(marks, DUMMY.matrix)
+        COLOR.setHex(t.tag === 2 ? 0x69c4ff : 0xff3a3a)
+        this.tagMesh.setColorAt(marks, COLOR)
+        DUMMY.position.set(x + 0.5, top + 0.55, z + 0.5)
+        DUMMY.rotation.set(0, Math.PI / 5, 0)
+        DUMMY.updateMatrix()
+        this.markMesh.setMatrixAt(marks, DUMMY.matrix)
+        COLOR.setHex(t.tag === 2 ? 0x9ad4ff : 0xffe14a)
+        this.markMesh.setColorAt(marks, COLOR)
+        marks++
       }
       if (t.door && doors < this.doorMesh.count + 1000 && doors < (this.doorMesh.instanceColor?.count ?? 0)) {
         DUMMY.position.set(x + 0.5, 0.7, z + 0.5)
@@ -454,9 +516,10 @@ export class DungeonView {
     this.roomMesh.count = rooms
     this.nuggetMesh.count = nuggets
     this.markMesh.count = marks
+    this.tagMesh.count = marks
     this.doorMesh.count = doors
     this.trapMesh.count = traps
-    for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.doorMesh, this.trapMesh]) {
+    for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.tagMesh, this.doorMesh, this.trapMesh]) {
       m.instanceMatrix.needsUpdate = true
       if (m.instanceColor) m.instanceColor.needsUpdate = true
     }
@@ -522,8 +585,9 @@ export class DungeonView {
     }
   }
 
-  private syncActors(world: World, dt: number, held: Creature | null, hover: { x: number; y: number } | null): void {
+  private syncActors(world: World, dt: number, held: Creature[], hover: { x: number; y: number } | null): void {
     const live = new Set<number>()
+    const stack = new Map(held.map((c, i) => [c.id, i]))
     for (const c of world.creatures) {
       if (c.dead) continue
       live.add(c.id)
@@ -531,42 +595,111 @@ export class DungeonView {
       if (!group) {
         group = buildCreature(species(c.kind).look)
         group.userData.creatureId = c.id
+        group.userData.hp = c.hp
+        group.userData.hit = 0
         this.actors.set(c.id, group)
         this.scene.add(group)
       }
+      const prevHp = group.userData.hp as number
+      if (c.hp < prevHp - 0.4) group.userData.hit = 0.28
+      group.userData.hp = c.hp
+      if ((group.userData.hit as number) > 0) group.userData.hit = Math.max(0, (group.userData.hit as number) - dt)
       const ox = ((c.id * 17) % 7 - 3) * 0.03
       const oz = ((c.id * 13) % 7 - 3) * 0.03
       let x = c.x + ox
       let z = c.y + oz
       let y = 0.16
-      if (c.held && held && hover) {
-        x = hover.x + 0.5
-        z = hover.y + 0.5
-        y = 1.15 + Math.sin(this.clock * 6) * 0.04
+      const slot = stack.get(c.id)
+      if (c.held && hover && slot !== undefined) {
+        const palm = this.cursorPoint(world, hover)
+        x = palm.x
+        z = palm.z
+        y = palm.y + 0.28 + slot * 0.42
       }
-      if (c.unconscious > 0 || c.carried) y = 0.08
+      const sleeping = c.mode === 'sleep'
+      if (c.unconscious > 0 || c.carried || sleeping) y = sleeping ? 0.2 : 0.08
       group.position.set(x, y, z)
       group.visible = true
-      const moving = c.path.length > c.pathI && c.unconscious <= 0 && !c.held
-      const swing = moving ? Math.sin(this.clock * 10 * (0.6 + species(c.kind).speed * 0.15)) : 0
+      const working = !!c.job && c.pathI >= c.path.length && c.unconscious <= 0 && !c.held
+      const moving = c.path.length > c.pathI && c.unconscious <= 0 && !c.held && !sleeping
+      const swing = moving || working ? Math.sin(this.clock * (working ? 16 : 10) * (0.6 + species(c.kind).speed * 0.15)) : 0
+      const fighting = c.mode === 'fight' && c.cool < 0.28
       const parts = group.userData.parts as Parts
       if (parts.legL) parts.legL.rotation.x = swing * 0.7
       if (parts.legR) parts.legR.rotation.x = -swing * 0.7
-      if (parts.armL) parts.armL.rotation.x = -swing * 0.5
-      if (parts.armR) parts.armR.rotation.x = c.cool < 0.18 && c.mode === 'fight' ? -1.2 : swing * 0.4
-      if (parts.body) parts.body.position.y = parts.bodyBase + (moving ? Math.abs(swing) * 0.04 : Math.sin(this.clock * 2 + c.id) * 0.02)
-      group.rotation.y = -c.facing
-      group.rotation.z = c.unconscious > 0 || c.carried ? Math.PI / 2.4 : 0
+      if (parts.armL) parts.armL.rotation.x = working ? -1.1 : -swing * 0.5
+      if (parts.armR) parts.armR.rotation.x = fighting ? -1.45 : working ? 0.9 : swing * 0.4
+      if (parts.body) parts.body.position.y = parts.bodyBase + (moving || working ? Math.abs(swing) * 0.05 : Math.sin(this.clock * 2 + c.id) * 0.02)
+      if (working && c.jobTile >= 0) {
+        const jx = gx(world.width, c.jobTile) + 0.5
+        const jz = gy(world.width, c.jobTile) + 0.5
+        group.rotation.y = -Math.atan2(jx - c.x, jz - c.y)
+      } else group.rotation.y = -c.facing
+      group.rotation.z = c.unconscious > 0 || c.carried || sleeping ? Math.PI / 2.3 : 0
       const chick = group.getObjectByName('chick')
       if (chick) chick.visible = c.chicken > 0
-      group.scale.setScalar(c.chicken > 0 ? 0.45 : 1)
-      void dt
+      const loot = group.getObjectByName('loot')
+      if (loot) loot.visible = c.carry === 'gold' || c.carry === 'crate'
+      const bar = group.getObjectByName('hp') as THREE.Mesh | null
+      if (bar) {
+        const ratio = Math.max(0.05, Math.min(1, c.hp / Math.max(1, c.maxHp)))
+        bar.scale.x = ratio
+        bar.position.x = (ratio - 1) * 0.22
+        const mat = bar.material as THREE.MeshBasicMaterial
+        mat.color.setHex(ratio > 0.55 ? 0x3dcc66 : ratio > 0.28 ? 0xe0b040 : 0xe04040)
+      }
+      const burst = group.getObjectByName('burst')
+      if (burst) {
+        burst.visible = c.slap > 6 || (group.userData.hit as number) > 0.02
+        burst.scale.setScalar(c.slap > 6 ? 1.1 + (8 - c.slap) * 0.35 : 1.4)
+      }
+      const hitScale = (group.userData.hit as number) > 0.05 ? 1.18 : 1
+      group.scale.setScalar((c.chicken > 0 ? 0.45 : 1) * hitScale * (c.slap > 7 ? 1.12 : 1))
     }
     for (const [id, group] of this.actors) {
-      if (!live.has(id)) {
-        group.visible = false
+      if (!live.has(id)) group.visible = false
+    }
+  }
+
+  private cursorPoint(world: World, hover: { x: number; y: number }): THREE.Vector3 {
+    const h = Math.max(0.25, this.column(world, hover.x, hover.y))
+    return new THREE.Vector3(
+      hover.x + 0.5,
+      h + 0.72 + Math.sin(this.clock * 3.2) * 0.04,
+      hover.y + 0.5,
+    )
+  }
+
+  private placeHand(world: World, hover: { x: number; y: number } | null, slapping: boolean): void {
+    if (!hover) {
+      this.hand.visible = false
+      return
+    }
+    this.hand.visible = true
+    const palm = this.cursorPoint(world, hover)
+    this.hand.position.copy(palm)
+    if (slapping) this.hand.position.y -= 0.35
+    this.hand.rotation.set(slapping ? -1.2 : -0.65, this.theta, slapping ? 0.4 : 0.08)
+  }
+
+  private syncChickens(world: World): void {
+    if (!this.chickenMesh) return
+    let n = 0
+    for (const room of world.rooms) {
+      if (room.type !== 'hatchery' || room.chickens <= 0) continue
+      for (let i = 0; i < room.chickens && n < 200; i++) {
+        const tile = room.tiles[i % room.tiles.length]!
+        const x = gx(world.width, tile)
+        const z = gy(world.width, tile)
+        DUMMY.position.set(x + 0.22 + (i % 3) * 0.26, 0.28, z + 0.28 + ((i / 3) | 0) % 3 * 0.22)
+        DUMMY.rotation.set(0, i, 0)
+        DUMMY.scale.set(1, 1, 1)
+        DUMMY.updateMatrix()
+        this.chickenMesh.setMatrixAt(n++, DUMMY.matrix)
       }
     }
+    this.chickenMesh.count = n
+    this.chickenMesh.instanceMatrix.needsUpdate = true
   }
 
   private smooth(dt: number, world: World): void {
@@ -728,9 +861,52 @@ function buildCreature(look: Look): THREE.Group {
   chick.position.y = 0.2
   chick.visible = false
   root.add(chick)
+  const loot = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), new THREE.MeshLambertMaterial({ color: 0xffd56a, emissive: 0x6a4200 }))
+  loot.name = 'loot'
+  loot.position.set(0.16, 0.95, 0.1)
+  loot.visible = false
+  root.add(loot)
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.07, 0.07), new THREE.MeshBasicMaterial({ color: 0x3dcc66 }))
+  bar.name = 'hp'
+  bar.position.y = 1.12
+  root.add(bar)
+  const burst = new THREE.Mesh(new THREE.RingGeometry(0.18, 0.34, 16), new THREE.MeshBasicMaterial({ color: 0xffe08a, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }))
+  burst.name = 'burst'
+  burst.rotation.x = -Math.PI / 2
+  burst.position.y = 0.05
+  burst.visible = false
+  root.add(burst)
   const eye = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 4), new THREE.MeshBasicMaterial({ color: 0xffe6a0 }))
   eye.position.set(0.06, look.body === 'beetle' || look.body === 'spider' || look.body === 'quad' ? 0.36 : 0.8, 0.1)
   root.add(eye)
   root.userData.parts = parts
   return root
+}
+
+function buildHand(): THREE.Group {
+  const g = new THREE.Group()
+  const skin = new THREE.MeshBasicMaterial({ color: 0xff8a1a })
+  const nail = new THREE.MeshBasicMaterial({ color: 0xffe0c4 })
+  const cuff = new THREE.MeshBasicMaterial({ color: 0x6a1020 })
+  const palm = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.18, 0.62), skin)
+  palm.position.set(0, 0, 0.08)
+  g.add(palm)
+  const wrist = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.22, 0.34), cuff)
+  wrist.position.set(0, 0.02, -0.34)
+  g.add(wrist)
+  for (let i = 0; i < 4; i++) {
+    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.1, 0.42), skin)
+    finger.position.set(-0.27 + i * 0.18, 0.04, 0.5)
+    g.add(finger)
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.06, 0.1), nail)
+    tip.position.set(-0.27 + i * 0.18, 0.08, 0.72)
+    g.add(tip)
+  }
+  const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.32), skin)
+  thumb.position.set(-0.48, 0.02, 0.16)
+  thumb.rotation.y = 0.7
+  g.add(thumb)
+  g.scale.setScalar(2.05)
+  g.traverse((obj) => { obj.frustumCulled = false })
+  return g
 }

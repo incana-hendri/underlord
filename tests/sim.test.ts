@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CAMPAIGN } from '../src/data/campaign.ts'
 import { findPath } from '../src/sim/grid.ts'
 import { roomEfficiency } from '../src/sim/sim.ts'
 import {
@@ -11,8 +12,8 @@ import {
   tagTiles,
 } from '../src/sim/sim.ts'
 import { Terrain } from '../src/sim/types.ts'
-import { spawnCreature } from '../src/sim/world.ts'
-import { run, world } from './helpers.ts'
+import { World, spawnCreature } from '../src/sim/world.ts'
+import { level, run, world } from './helpers.ts'
 
 describe('pathfinding', () => {
   it('walks around a wall and refuses a blocked corridor', () => {
@@ -61,6 +62,24 @@ describe('imps and gold', () => {
     expect(w.keepers[1]!.gold).toBeGreaterThan(before)
     expect(w.stats.goldMined).toBeGreaterThan(0)
   })
+
+  it('banks gold in the heart vault when no treasury is built', () => {
+    const w = world(['######', '#++++#', '#+h++#', '#g+++#', '######'])
+    tagTiles(w, 1, 1, 3, 1, 3, 'set')
+    w.keepers[1]!.gold = 400
+    const before = w.keepers[1]!.gold
+    run(w, 16)
+    expect(w.tiles[3 * 6 + 1]!.terrain).toBe(Terrain.Floor)
+    expect(w.keepers[1]!.gold).toBeGreaterThan(before)
+  })
+
+  it('mines the tagged seam on the first campaign map', () => {
+    const w = World.load(CAMPAIGN[0]!, 3)
+    const before = w.keepers[1]!.gold
+    run(w, 18)
+    expect(w.tiles[31 * 40 + 17]!.terrain).toBe(Terrain.Floor)
+    expect(w.keepers[1]!.gold).toBeGreaterThan(before)
+  })
 })
 
 describe('rooms and wages', () => {
@@ -76,6 +95,16 @@ describe('rooms and wages', () => {
     const gold = w.keepers[1]!.gold
     expect(sellTile(w, 1, 4, 1)).toBe(true)
     expect(w.keepers[1]!.gold).toBeGreaterThan(gold)
+  })
+
+  it('pays wages and announces payday', () => {
+    const w = world(['#####', '#+h+#', '#+++#', '#####'])
+    w.keepers[1]!.gold = 500
+    w.keepers[1]!.paydayT = 0.05
+    spawnCreature(w, 'beetle', 1, 2.5, 1.5)
+    run(w, 0.2)
+    expect(w.keepers[1]!.gold).toBeLessThan(500)
+    expect(w.notes.some((n) => n.text.includes('Payday'))).toBe(true)
   })
 
   it('angers creatures who miss payday', () => {
@@ -126,5 +155,37 @@ describe('creatures and combat', () => {
     expect(knight.hp).toBeLessThan(hp)
     w.keepers[1]!.gold = 0
     expect(castSpell(w, 1, 'lightning', 2, 2)).toBe(false)
+  })
+
+  it('walks a hero in from the gate', () => {
+    const w = World.load(level(['#######', '#G....#', '#.....#', '#..h..#', '#######'], {
+      waves: [{ at: 0.15, gate: 1, party: [{ id: 'knight', n: 1 }], text: 'Heroes have found the gate.', narration: 'heroes' }],
+    }))
+    run(w, 1.2)
+    const knight = w.creatures.find((c) => c.kind === 'knight' && !c.dead)
+    expect(knight).toBeTruthy()
+    const before = w.creatures.filter((c) => c.kind === 'imp').reduce((sum, c) => sum + c.hp, 0)
+    run(w, 3)
+    const after = w.creatures.filter((c) => c.kind === 'imp').reduce((sum, c) => sum + (c.dead ? 0 : c.hp), 0)
+    expect(after).toBeLessThan(before)
+  })
+
+  it('ends in defeat when the heart breaks, and victory when the objectives are met', () => {
+    const lost = world(['#####', '#+h+#', '#+++#', '#####'])
+    for (const c of lost.creatures) c.dead = true
+    const heart = lost.keepers[1]!.heart
+    lost.tiles[heart]!.hp = 18
+    const hx = heart % lost.width
+    const hy = (heart / lost.width) | 0
+    spawnCreature(lost, 'knight', 0, hx + 0.5, hy + 0.5)
+    run(lost, 4)
+    expect(lost.outcome).toBe('defeat')
+
+    const won = World.load(level(['#####', '#+h+#', '#####'], {
+      objectives: [{ id: 'gold', text: 'Mine a little gold', type: 'goldMined', amount: 10 }],
+    }))
+    won.stats.goldMined = 10
+    won.tick(0.1)
+    expect(won.outcome).toBe('victory')
   })
 })

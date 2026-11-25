@@ -12,4 +12,13 @@ describe('campaign maps', () => {
       expect(world.keepers[1]?.alive).toBe(true)
     })
   }
+
+  it('the rival keeper tags work for its imps', () => {
+    const level = CAMPAIGN.find((l) => l.id === '03-rival')!
+    const world = World.load(level, 4)
+    for (let i = 0; i < 80; i++) world.tick(0.1)
+    const tagged = world.tiles.some((t) => t.tagOwner === 2 && t.tag > 0)
+    const busy = world.creatures.some((c) => c.owner === 2 && !c.dead && (c.job !== '' || c.carry !== ''))
+    expect(tagged || busy).toBe(true)
+  })
 })

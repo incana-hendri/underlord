@@ -19,10 +19,10 @@ import {
   setResearch,
   setScavenge,
   shiftJob,
+  slap as slapCreature,
   summonImp,
   tagTiles,
 } from './sim/sim.ts'
-import { slap as slapCreature } from './sim/sim.ts'
 import { clearSave, hasSave, loadSave, persist } from './sim/save.ts'
 import { Terrain, type LevelDef } from './sim/types.ts'
 import { World } from './sim/world.ts'
@@ -39,14 +39,15 @@ export class Game {
   private audio = new AudioBus()
   private tool: Tool = { kind: 'hand' }
   private speed = 1
-  private held = 0
+  private held: number[] = []
+  private simAcc = 0
+  private hoverKey = ''
   private hover: { x: number; y: number } | null = null
   private drag: { x: number; y: number; px: number; py: number; button: number } | null = null
   private keys = new Set<string>()
   private last = performance.now()
   private noteCursor = 0
   private uiAcc = 0
-  private zoomEvents = true
   private tab: 'rooms' | 'spells' | 'workshop' | 'creatures' = 'rooms'
   private pointer = { x: 0, y: 0 }
 
@@ -118,7 +119,7 @@ export class Game {
     this.root.querySelector('#help')!.innerHTML = `
       <div class="sheet">
         <h2>The hand and the eye</h2>
-        <p>Left click tags earth, gold and gems for digging, and rock for reinforcing. Drag a rectangle to mark many. Click a creature to pick it up, click again to drop it. Right click slaps. Shift-drop a creature on a temple of nine tiles to sacrifice it.</p>
+        <p>The red hand follows the cursor. Left click tags earth, gold and gems for digging, and rock for reinforcing. Drag a rectangle to mark many. Click a creature to pick it up; click another to carry a stack. Right click drops the top creature, or slaps whatever is under an empty hand. Shift-right-click a creature onto a temple of nine tiles to sacrifice it.</p>
         <p>WASD or arrows pan. Q and E rotate. R and F tilt. The wheel zooms. Drag with the right or middle button to orbit. Home resets the isometric angle. Space pauses. 1, 2 and 3 set the speed. Esc leaves possession or opens the menu.</p>
         <p>Build rooms on claimed floor. Creatures arrive through the portal when the rooms they crave exist. Imps dig, claim, haul gold and drag the fallen to prison. Research in a library. The workshop forges doors and traps.</p>
         <div class="row"><button class="textbtn primary" id="help-back">Back</button></div>
@@ -160,7 +161,9 @@ export class Game {
 
   private start(world: World): void {
     this.world = world
-    this.held = 0
+    this.held = []
+    this.simAcc = 0
+    this.hoverKey = ''
     this.tool = { kind: 'hand' }
     this.speed = 1
     this.noteCursor = 0
@@ -211,6 +214,7 @@ export class Game {
     this.bindPlay(canvas)
     this.show('play')
     this.refreshUi(true)
+    this.publish()
     void this.audio.unlock()
   }
 
@@ -238,8 +242,10 @@ export class Game {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault())
     canvas.addEventListener('pointerdown', (e) => {
       void this.audio.unlock()
+      if (e.shiftKey) this.keys.add('shift')
       this.pointer = { x: e.clientX, y: e.clientY }
       if (e.button === 0) this.keys.add('mouse0')
+      try { canvas.setPointerCapture(e.pointerId) } catch { /* already released */ }
       const hit = this.view?.pick(e.clientX, e.clientY, this.world!)
       this.drag = { x: hit?.x ?? 0, y: hit?.y ?? 0, px: e.clientX, py: e.clientY, button: e.button }
     })
@@ -267,11 +273,12 @@ export class Game {
       const box = this.root.querySelector('#dragbox') as HTMLDivElement
       box.style.display = 'none'
       const hit = this.view.pick(e.clientX, e.clientY, this.world)
-      if (this.drag.button === 2 && moved < 6) this.rightClick(hit)
+      if (this.drag.button === 2 && moved < 6) this.rightClick(hit, e.shiftKey)
       else if (this.drag.button === 0 && moved > 8 && hit && (this.tool.kind === 'hand' || this.tool.kind === 'room' || this.tool.kind === 'sell')) {
         this.applyRect(this.drag.x, this.drag.y, hit.x, hit.y)
       } else if (this.drag.button === 0 && moved < 8) this.leftClick(hit)
       this.drag = null
+      this.refreshUi(false)
     })
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault()
@@ -285,9 +292,11 @@ export class Game {
     if (!el || !this.world) return
     const kind = el.dataset.kind!
     const id = el.dataset.id!
-    if (kind === 'room' || kind === 'spell' || kind === 'trap' || kind === 'door') {
+    if (kind === 'spell' && id === 'create_imp') {
+      castSpell(this.world, 1, id, 0, 0)
+      this.tool = { kind: 'hand' }
+    } else if (kind === 'room' || kind === 'spell' || kind === 'trap' || kind === 'door') {
       this.tool = { kind, id }
-      if (kind === 'spell') setResearch(this.world, 1, id)
     } else if (kind === 'research') setResearch(this.world, 1, id)
     else if (kind === 'job') shiftJob(this.world, 1, id, (el.dataset.dir === '-1' ? -1 : 1))
     else if (kind === 'summon') summonImp(this.world, 1)
@@ -302,38 +311,57 @@ export class Game {
   private leftClick(hit: { x: number; y: number; creatureId: number } | null): void {
     const world = this.world
     if (!world || !hit) return
-    if (this.held) {
-      const shift = this.keys.has('Shift')
-      dropCreature(world, this.held, hit.x, hit.y, shift)
-      this.held = 0
-      return
-    }
     if (world.possessId) {
       world.possessAtk = true
       return
     }
-    if (this.tool.kind === 'hand') {
-      if (hit.creatureId) {
-        holdCreature(world, hit.creatureId)
-        const c = world.creature(hit.creatureId)
-        if (c?.held) this.held = c.id
-        else tagTiles(world, 1, hit.x, hit.y, hit.x, hit.y, 'toggle')
-      } else tagTiles(world, 1, hit.x, hit.y, hit.x, hit.y, 'toggle')
-    } else if (this.tool.kind === 'room') placeRoom(world, 1, this.tool.id, hit.x, hit.y)
+    if (this.tool.kind === 'hand' && hit.creatureId && this.takeCreature(hit.creatureId)) {
+      this.audio.play('pickup')
+      return
+    }
+    if (this.tool.kind === 'hand') tagTiles(world, 1, hit.x, hit.y, hit.x, hit.y, 'toggle')
+    else if (this.tool.kind === 'room') placeRoom(world, 1, this.tool.id, hit.x, hit.y)
     else if (this.tool.kind === 'sell') sellTile(world, 1, hit.x, hit.y)
     else if (this.tool.kind === 'spell') castSpell(world, 1, this.tool.id, hit.x, hit.y, hit.creatureId)
     else if (this.tool.kind === 'trap' || this.tool.kind === 'door') queueBuild(world, 1, this.tool.kind, this.tool.id, hit.x, hit.y)
     this.audio.play('ui')
   }
 
-  private rightClick(hit: { x: number; y: number; creatureId: number } | null): void {
-    if (!this.world) return
-    if (this.held) {
-      slapCreature(this.world, this.held)
+  private takeCreature(id: number): boolean {
+    const world = this.world
+    if (!world || this.held.includes(id)) return false
+    const before = world.creature(id)
+    if (!before || before.dead || before.held) return false
+    if (!(before.kind === 'imp' || before.owner === 1 || before.unconscious > 0)) return false
+    holdCreature(world, id)
+    if (!before.held) return false
+    this.held.push(id)
+    return true
+  }
+
+  private rightClick(hit: { x: number; y: number; creatureId: number } | null, shift: boolean): void {
+    const world = this.world
+    if (!world) return
+    this.pruneHeld()
+    if (this.held.length && hit) {
+      const id = this.held.pop()!
+      dropCreature(world, id, hit.x, hit.y, shift)
+      this.audio.play('drop')
       return
     }
-    if (hit?.creatureId) slapCreature(this.world, hit.creatureId)
-    else this.tool = { kind: 'hand' }
+    if (hit?.creatureId) {
+      slapCreature(world, hit.creatureId)
+      this.audio.play('slap')
+    } else this.tool = { kind: 'hand' }
+  }
+
+  private pruneHeld(): void {
+    const world = this.world
+    if (!world) return
+    this.held = this.held.filter((id) => {
+      const c = world.creature(id)
+      return !!c && c.held && !c.dead
+    })
   }
 
   private applyRect(x0: number, y0: number, x1: number, y1: number): void {
@@ -373,7 +401,7 @@ export class Game {
   }
 
   private frame(now: number): void {
-    const dt = Math.min(0.05, (now - this.last) / 1000)
+    const dt = Math.min(0.5, Math.max(0, (now - this.last) / 1000))
     this.last = now
     const world = this.world
     const view = this.view
@@ -396,23 +424,29 @@ export class Game {
         world.possessAtk = this.keys.has('mouse0')
       }
       if (this.speed > 0 && world.outcome === 'playing') {
-        let acc = dt * this.speed
-        let guard = 0
-        while (acc > 0.05 && guard++ < 8) {
+        this.simAcc += dt * this.speed
+        let steps = 0
+        while (this.simAcc >= 0.05 && steps < 36) {
           world.tick(0.05)
-          acc -= 0.05
+          this.simAcc -= 0.05
+          steps++
         }
+        if (steps >= 36) this.simAcc = Math.min(this.simAcc, 0.05)
       }
+      this.pruneHeld()
       this.consumeSignals(world)
-      const gl = this.root.querySelector('#gl') as HTMLCanvasElement
-      const rect = gl.getBoundingClientRect()
-      const hit = view.pick(this.pointer.x, this.pointer.y, world)
-      this.hover = hit ? { x: hit.x, y: hit.y } : null
-      if (this.pointer.x < rect.left || this.pointer.y < rect.top) this.hover = null
-      const held = this.held ? world.creature(this.held) ?? null : null
       const canvas = this.root.querySelector('#gl') as HTMLCanvasElement
       view.setSize(canvas.clientWidth, canvas.clientHeight)
-      view.update(world, dt, this.hover, held ?? null)
+      const rect = canvas.getBoundingClientRect()
+      const inside = this.pointer.x >= rect.left && this.pointer.x <= rect.right && this.pointer.y >= rect.top && this.pointer.y <= rect.bottom
+      const hit = inside ? view.pick(this.pointer.x, this.pointer.y, world) : null
+      this.hover = hit ? { x: hit.x, y: hit.y } : null
+      const hoverKey = `${hit ? `${hit.x},${hit.y},${hit.creatureId}` : 'none'}:${this.held.length}`
+      if (hoverKey !== this.hoverKey) {
+        this.hoverKey = hoverKey
+        this.describe(hit)
+      }
+      view.update(world, dt, this.hover, this.carried())
       this.uiAcc += dt
       if (this.uiAcc > 0.25) {
         this.uiAcc = 0
@@ -439,12 +473,94 @@ export class Game {
         this.root.querySelector('#mentor')?.classList.add('talk')
         window.setTimeout(() => this.root.querySelector('#mentor')?.classList.remove('talk'), 1600)
       }
-      if (this.zoomEvents && note.tile >= 0 && this.view) {
-        const x = note.tile % world.width
-        const y = (note.tile / world.width) | 0
-        this.view.focus(x + 0.5, y + 0.5)
-      }
     }
+    if (world.camHint >= 0 && this.view) {
+      const tile = world.camHint
+      world.camHint = -1
+      this.view.focus((tile % world.width) + 0.5, ((tile / world.width) | 0) + 0.5)
+    }
+  }
+
+  private carried() {
+    const world = this.world
+    if (!world) return []
+    return this.held.map((id) => world.creature(id)).filter((c): c is NonNullable<typeof c> => !!c && c.held && !c.dead)
+  }
+
+  private describe(hit: { x: number; y: number; creatureId: number } | null): void {
+    const el = this.root.querySelector('#inspector')
+    const world = this.world
+    if (!el || !world) return
+    const carrying = this.held.length ? `<p>Carrying ${this.held.length}. Right-click a tile to drop.</p>` : ''
+    if (!hit) {
+      el.innerHTML = `<h3>The hand</h3><p>Tag earth to dig. The imps will do the rest.</p>${carrying}`
+      return
+    }
+    const t = world.tiles[hit.y * world.width + hit.x]
+    if (!t) return
+    const names = ['Rock', 'Earth', 'Gold seam', 'Gem vein', 'Water', 'Lava', 'Floor']
+    const owner = t.owner === 1 ? 'Your claim' : t.owner > 1 ? 'Rival claim' : 'Unclaimed'
+    const bits = [names[t.terrain] ?? 'Ground', owner]
+    if (t.room) bits.push(ROOMS[t.room]?.name ?? t.room)
+    if (t.heart) bits.push(t.heart === 1 ? 'Dungeon heart' : 'Rival heart')
+    if (t.portal) bits.push('Portal')
+    if (t.tag === 1) bits.push('Tagged to dig')
+    if (t.tag === 2) bits.push('Tagged to reinforce')
+    if (t.reinforced) bits.push('Reinforced')
+    if (t.gold > 0) bits.push(`${Math.floor(t.gold)} gold`)
+    if (t.door) bits.push(`${t.door} door`)
+    if (t.trap) bits.push(t.trap.replace('_', ' '))
+    let creature = ''
+    const c = hit.creatureId ? world.creature(hit.creatureId) : undefined
+    if (c && !c.dead) {
+      const spec = SPECIES[c.kind]
+      const job = c.carry === 'gold' ? 'hauling gold' : c.job || c.mode || 'idle'
+      creature = `<p><strong>${spec?.name ?? c.kind}</strong> · ${Math.ceil(c.hp)}/${Math.ceil(c.maxHp)} hp · ${job}${c.kind === 'imp' ? '' : ` · hunger ${Math.round(c.hunger)} · pay anger ${Math.round(c.anger)}`}</p>`
+    }
+    el.innerHTML = `<h3>${hit.x}, ${hit.y}</h3><p>${bits.join(' · ')}</p>${creature}${carrying}`
+  }
+
+  private publish(): void {
+    const worldOf = () => this.world
+    const probeHeld = () => this.held.length
+    const probe = {
+      get time() { return worldOf()?.time ?? 0 },
+      get gold() { return worldOf()?.keepers[1]?.gold ?? 0 },
+      get held() { return probeHeld() },
+      get outcome() { return worldOf()?.outcome ?? 'playing' },
+      get width() { return worldOf()?.width ?? 0 },
+      get height() { return worldOf()?.height ?? 0 },
+      get heart() {
+        const world = worldOf()
+        const k = world?.keepers[1]
+        if (!world || !k || k.heart < 0) return 0
+        return world.tiles[k.heart]?.hp ?? 0
+      },
+      tile(x: number, y: number) {
+        const world = worldOf()
+        if (!world || x < 0 || y < 0 || x >= world.width || y >= world.height) return null
+        const t = world.tiles[y * world.width + x]!
+        return { terrain: t.terrain, owner: t.owner, tag: t.tag, tagOwner: t.tagOwner, gold: t.gold, room: t.room, heart: t.heart, portal: t.portal, dig: t.dig }
+      },
+      creatures() {
+        return (worldOf()?.creatures ?? []).filter((c) => !c.dead).map((c) => ({
+          id: c.id, kind: c.kind, owner: c.owner, x: c.x, y: c.y, held: c.held, carry: c.carry, job: c.job, hp: c.hp, mode: c.mode,
+        }))
+      },
+      notes() { return (worldOf()?.notes ?? []).map((n) => n.text) },
+      chickens() { return (worldOf()?.rooms ?? []).reduce((n, r) => n + (r.type === 'hatchery' ? r.chickens : 0), 0) },
+      screen: (x: number, y: number, height = 0.45) => {
+        const canvas = this.root.querySelector('#gl') as HTMLCanvasElement | null
+        const p = this.view?.project(x, height, y)
+        if (!canvas || !p) return null
+        const rect = canvas.getBoundingClientRect()
+        const sx = rect.left + p.x
+        const sy = rect.top + p.y
+        if (sx < rect.left + 6 || sy < rect.top + 6 || sx > rect.right - 6 || sy > rect.bottom - 6) return null
+        return { x: sx, y: sy }
+      },
+    }
+    Object.defineProperty(window, '__underlord', { configurable: true, value: probe })
   }
 
   private refreshUi(rebuild: boolean): void {
@@ -479,10 +595,13 @@ export class Game {
     this.root.querySelectorAll('#tabs button').forEach((btn) => {
       btn.classList.toggle('on', (btn as HTMLButtonElement).dataset.tab === this.tab)
     })
-    if (!rebuild && this.uiAcc > 0) return
-    const body = this.root.querySelector('#tabbody')
+    const body = this.root.querySelector('#tabbody') as HTMLElement | null
     if (!body) return
-    body.innerHTML = this.tabHtml(world)
+    const html = this.tabHtml(world)
+    if (rebuild || body.dataset.stamp !== html) {
+      body.dataset.stamp = html
+      body.innerHTML = html
+    }
   }
 
   private tabHtml(world: World): string {
@@ -637,7 +756,7 @@ function parseCustom(text: string, rival: boolean, heroes: boolean): LevelDef | 
       doors: ['wooden'],
     } : null,
     waves: heroes && flat.includes('G') ? [
-      { at: 120, gate: 1, party: [{ id: 'thief', n: 1 }, { id: 'knight', n: 1 }, { id: 'archer', n: 1 }], text: 'Heroes have found your gate.', narration: 'heroes' },
+      { at: 18, gate: 1, party: [{ id: 'thief', n: 1 }, { id: 'knight', n: 1 }, { id: 'archer', n: 1 }], text: 'Heroes have found your gate.', narration: 'heroes' },
     ] : [],
     objectives: rival && flat.includes('H')
       ? [{ id: 'heart', text: 'Destroy the rival heart', type: 'heart' }]
