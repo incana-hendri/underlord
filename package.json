@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 41773",
     "test": "vitest run",
+    "e2e": "playwright test",
     "lint": "eslint src tests",
     "narration": "node scripts/generate-narration.mjs",
     "levels": "node scripts/generate-levels.mjs"
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.65.1",
     "@types/three": "^0.187.0",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",

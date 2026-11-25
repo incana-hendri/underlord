@@ -30,3 +30,6 @@ dist-ssr
 scripts/narration/node_modules
 .cache
 *.wav
+test-results
+playwright-report
+blob-report
