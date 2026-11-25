@@ -20,6 +20,21 @@ Surface maps in `public/textures/` are 1K JPGs from [ambientCG](https://ambientc
 | `floor_color.jpg`, `floor_normal.jpg`, `floor_rough.jpg` | PavingStones130 |
 | `metal_color.jpg`, `metal_normal.jpg`, `metal_rough.jpg`, `metal_metal.jpg` | Metal034 |
 
+## Creatures — Quaternius (CC0)
+
+Rigged, animated glTF models in `public/models/` are by [Quaternius](https://quaternius.com) and were taken from the CC0 packs mirrored by the [Quaternius showcase](https://github.com/trebeljahr/quaternius-showcase) (models only; that repo's code license does not apply). Each pack page states CC0 1.0.
+
+| File | Pack | Used for |
+| --- | --- | --- |
+| `imp.glb` | [Platformer Game Kit](https://quaternius.com/packs/ultimateplatformer.html) enemy | Imps |
+| `human.glb` | Platformer Game Kit character | Goblins, warlocks, heroes without plate |
+| `knight.glb` | [Animated Knight](https://quaternius.com/packs/knightcharacter.html) | Knights, dwarves, the Lord, the reaper |
+| `rat.glb`, `spider.glb`, `frog.glb`, `wasp.glb` | [Easy Enemies](https://quaternius.com/packs/easyenemy.html) | Beetle, spider, bile demon, fly and fairy |
+| `fox.glb` | [Ultimate Animated Animals](https://quaternius.com/packs/ultimateanimatedanimals.html) | Hellhound |
+| `raptor.glb` | [Animated Dinosaurs](https://quaternius.com/packs/animateddinosaurs.html) | Dragon |
+
+Walk, idle, and attack clips play through three.js `AnimationMixer`. The clawed hand, torches, heart, and portal are still original meshes.
+
 ## Type — Cinzel (OFL)
 
 `public/fonts/cinzel-latin-500.woff2` is Cinzel, designed by Natanael Gama, under the SIL Open Font License 1.1. The file is the Latin 500-weight subset published by [Fontsource](https://fontsource.org/fonts/cinzel). Panel titles use it. Body text stays a system serif so the log stays readable.

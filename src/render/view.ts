@@ -17,6 +17,7 @@ import {
   type Stage,
   type Surfaces,
 } from './look.ts'
+import { makeRig, modelReady, playRig, preloadBestiary, type ActorRig } from './bestiary.ts'
 
 const DUMMY = new THREE.Object3D()
 const COLOR = new THREE.Color()
@@ -74,6 +75,10 @@ export class DungeonView {
   private propN = 0
   private torchN = 0
   private torchSpots: { x: number; z: number }[] = []
+  private torchGroups: THREE.Group[] = []
+  private flameMat!: THREE.SpriteMaterial
+  private rigs = new Map<number, ActorRig>()
+  private seen = new Set<number>()
   private tagMesh!: THREE.InstancedMesh
   private chickenMesh!: THREE.InstancedMesh
   private banner = new THREE.Mesh(
@@ -93,16 +98,18 @@ export class DungeonView {
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1))
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.05
+    this.renderer.toneMappingExposure = 0.85
+    this.renderer.info.autoReset = false
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.15, 280)
-    this.scene.background = new THREE.Color(0x07060e)
-    this.scene.fog = new THREE.FogExp2(0x100c16, 0.02)
+    this.scene.background = new THREE.Color(0x000000)
+    this.scene.fog = new THREE.FogExp2(0x000000, 0.018)
     this.scene.environment = environment(this.renderer)
-    this.scene.add(new THREE.AmbientLight(0x3a3048, 0.38))
-    this.scene.add(new THREE.HemisphereLight(0x8aa0c8, 0x2a1410, 0.28))
-    this.sun = new THREE.DirectionalLight(0xffd2a8, 1.35)
+    this.scene.environmentIntensity = 0.08
+    this.scene.add(new THREE.AmbientLight(0x101018, 0.16))
+    this.scene.add(new THREE.HemisphereLight(0x1a2030, 0x000000, 0.06))
+    this.sun = new THREE.DirectionalLight(0x243044, 0.22)
     this.sun.castShadow = true
     this.sun.shadow.mapSize.set(1024, 1024)
     this.sun.shadow.camera.near = 2
@@ -137,6 +144,14 @@ export class DungeonView {
     this.scene.add(this.fx.points)
     this.banner.visible = false
     this.scene.add(this.banner)
+    this.flameMat = new THREE.SpriteMaterial({
+      map: flameTexture(),
+      color: 0xff6a18,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+    preloadBestiary()
     this.setQuality(this.quality)
   }
 
@@ -150,7 +165,7 @@ export class DungeonView {
     const map = q === 'high' ? 1024 : 512
     this.sun.shadow.mapSize.set(map, map)
     this.sun.castShadow = q === 'high'
-    const budget = q === 'high' ? 4 : q === 'low' ? 2 : 3
+    const budget = q === 'high' ? 6 : q === 'low' ? 3 : 5
     this.lights.forEach((light, i) => { light.visible = i < budget })
     this.stage = makeStage(this.renderer, this.scene, this.camera, q)
     const canvas = this.renderer.domElement
@@ -246,11 +261,31 @@ export class DungeonView {
     this.sun.target.position.set(this.target.x, 0, this.target.z)
     this.surfaces.gem.emissiveIntensity = 0.7 + Math.sin(this.clock * 5) * 0.28
     this.surfaces.lava.emissiveIntensity = 1.15 + Math.sin(this.clock * 6) * 0.35
+    this.torchGroups.forEach((torch, i) => {
+      const flame = torch.getObjectByName('flame')
+      if (!flame) return
+      const flick = 0.82 + Math.sin(this.clock * 16 + i * 1.7) * 0.2
+      flame.scale.set(0.7 * flick, 1.05 * flick, 1)
+    })
+    for (const heart of this.hearts) {
+      const vortex = heart.getObjectByName('vortex') as THREE.Mesh | undefined
+      const mat = vortex?.material
+      if (mat instanceof THREE.ShaderMaterial) mat.uniforms.uTime!.value = this.clock
+    }
+    if (this.quality !== 'low' && Math.floor(this.clock * 3) !== Math.floor((this.clock - dt) * 3)) {
+      const player = world.keepers[1]
+      if (player && player.heart >= 0) this.fx.burst(gx(world.width, player.heart) + 0.5, 1.3, gy(world.width, player.heart) + 0.5, 0xff3050, 4, 0.6)
+    }
     this.fx.update(dt)
     this.smooth(dt, world)
+    this.renderer.info.reset()
     if (this.direct) this.renderer.render(this.scene, this.camera)
     else this.stage.composer.render()
+    const info = this.renderer.info.render
+    this.lastStats = { calls: info.calls, triangles: info.triangles }
   }
+
+  private lastStats = { calls: 0, triangles: 0 }
 
   pick(clientX: number, clientY: number, world: World): { x: number; y: number; creatureId: number } | null {
     const rect = this.renderer.domElement.getBoundingClientRect()
@@ -458,17 +493,17 @@ export class DungeonView {
         continue
       }
       if (t.terrain === Terrain.Rock) {
-        if (t.reinforced) counts.brick = this.put(this.buckets.brick!, counts.brick!, x, z, 1, dim ? 0x6a7078 : 0xd5dbe4)
-        else counts.rock = this.put(this.buckets.rock!, counts.rock!, x, z, 1 - t.dig * 0.15, dim ? 0x5a5450 : 0xc8beb4)
-      } else if (t.terrain === Terrain.Earth) counts.earth = this.put(this.buckets.earth!, counts.earth!, x, z, 1 - t.dig * 0.85, shade)
+        if (t.reinforced) counts.brick = this.put(this.buckets.brick!, counts.brick!, x, z, 1, dim ? 0x3a3e44 : 0x8a9098)
+        else counts.rock = this.put(this.buckets.rock!, counts.rock!, x, z, 1 - t.dig * 0.15, dim ? 0x2a2826 : 0x6a6662)
+      } else if (t.terrain === Terrain.Earth) counts.earth = this.put(this.buckets.earth!, counts.earth!, x, z, 1 - t.dig * 0.85, dim ? 0x3a3028 : 0x8a6848)
       else if (t.terrain === Terrain.Gold) counts.gold = this.put(this.buckets.gold!, counts.gold!, x, z, 1 - t.dig * 0.85, shade)
       else if (t.terrain === Terrain.Gem) counts.gem = this.put(this.buckets.gem!, counts.gem!, x, z, 1 - t.dig * 0.85, shade)
       else if (t.terrain === Terrain.Water && !t.bridge) counts.water = this.put(this.buckets.water!, counts.water!, x, z, 1, shade)
       else if (t.terrain === Terrain.Lava && !t.bridge) counts.lava = this.put(this.buckets.lava!, counts.lava!, x, z, 1, shade)
       else if (t.bridge) counts.bridge = this.put(this.buckets.bridge!, counts.bridge!, x, z, 1, shade)
-      else if (t.owner === 1) counts.floorYou = this.put(this.buckets.floorYou!, counts.floorYou!, x, z, 1, dim ? 0x6a4038 : 0xd8a090)
-      else if (t.owner > 1) counts.floorFoe = this.put(this.buckets.floorFoe!, counts.floorFoe!, x, z, 1, dim ? 0x303848 : 0x6a78c8)
-      else counts.floorOpen = this.put(this.buckets.floorOpen!, counts.floorOpen!, x, z, 1, dim ? 0x4a4440 : 0xa09080)
+      else if (t.owner === 1) counts.floorYou = this.put(this.buckets.floorYou!, counts.floorYou!, x, z, 1, dim ? 0x3a2828 : 0x7a4038)
+      else if (t.owner > 1) counts.floorFoe = this.put(this.buckets.floorFoe!, counts.floorFoe!, x, z, 1, dim ? 0x242830 : 0x3a4468)
+      else counts.floorOpen = this.put(this.buckets.floorOpen!, counts.floorOpen!, x, z, 1, dim ? 0x2a2826 : 0x5a564e)
       if (t.room && t.terrain === Terrain.Floor) {
         DUMMY.position.set(x + 0.5, 0.2, z + 0.5)
         DUMMY.scale.set(1, 1, 1)
@@ -485,25 +520,26 @@ export class DungeonView {
         this.fx.burst(x + 0.5, 1.15, z + 0.5, crumb, 6, 1.8)
       }
       if (this.digState) this.digState[i] = t.dig
-      if (t.owner > 0 && t.terrain === Terrain.Floor && (i % 6) === 0 && this.torchN < 64) {
+      if (t.owner > 0 && t.terrain === Terrain.Floor && (i % 5) === 0 && this.torchN < 36) {
         const w = world.width
         const nb = [i - 1, i + 1, i - w, i + w]
         const walled = nb.some((j) => {
           const n = world.tiles[j]
-          return n && (n.terrain === Terrain.Rock || n.terrain === Terrain.Earth || n.terrain === Terrain.Gold)
+          return !!n && (n.terrain === Terrain.Rock || n.terrain === Terrain.Earth || n.terrain === Terrain.Gold)
         })
         if (walled) {
-          DUMMY.position.set(x + 0.62, 0.42, z + 0.62)
-          DUMMY.scale.set(1.4, 1.3, 1.4)
-          DUMMY.rotation.set(0, 0, 0)
-          DUMMY.updateMatrix()
-          this.torchMesh.setMatrixAt(this.torchN, DUMMY.matrix)
-          DUMMY.position.set(x + 0.62, 0.78, z + 0.62)
-          DUMMY.scale.set(1.8, 2.1, 1.8)
-          DUMMY.updateMatrix()
-          this.flameMesh.setMatrixAt(this.torchN, DUMMY.matrix)
           this.torchSpots.push({ x: x + 0.62, z: z + 0.62 })
           this.torchN++
+        }
+      }
+      if (t.terrain === Terrain.Gold && revealed) {
+        for (const [ox, oz] of [[0.22, 0.18], [-0.16, 0.2], [0.05, -0.22]] as const) {
+          if (nuggets >= this.cap - 1) break
+          DUMMY.position.set(x + 0.5 + ox, 1.15 * (1 - t.dig * 0.7), z + 0.5 + oz)
+          DUMMY.scale.setScalar(0.45)
+          DUMMY.rotation.set(0.4, i, 0.2)
+          DUMMY.updateMatrix()
+          this.nuggetMesh.setMatrixAt(nuggets++, DUMMY.matrix)
         }
       }
       if (t.terrain === Terrain.Floor && t.gold > 0) {
@@ -563,13 +599,43 @@ export class DungeonView {
     this.doorMesh.count = doors
     this.trapMesh.count = traps
     this.propMesh.count = this.propN
-    this.torchMesh.count = this.torchN
-    this.flameMesh.count = this.torchN
+    this.torchMesh.count = 0
+    this.flameMesh.count = 0
+    this.syncTorchProps()
     for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.tagMesh, this.doorMesh, this.trapMesh, this.propMesh, this.torchMesh, this.flameMesh]) {
       m.instanceMatrix.needsUpdate = true
       if (m.instanceColor) m.instanceColor.needsUpdate = true
     }
     this.syncHearts(world)
+  }
+
+  stats(): { calls: number; triangles: number } {
+    return this.lastStats
+  }
+
+  private syncTorchProps(): void {
+    for (const torch of this.torchGroups) this.scene.remove(torch)
+    this.torchGroups = []
+    const wood = new THREE.MeshStandardMaterial({ color: 0x3a2414, roughness: 0.9 })
+    const iron = new THREE.MeshStandardMaterial({ color: 0x2c3038, metalness: 0.75, roughness: 0.35 })
+    for (let i = 0; i < this.torchSpots.length; i++) {
+      const spot = this.torchSpots[i]!
+      const g = new THREE.Group()
+      const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.05, 0.28), iron)
+      bracket.position.set(0, 0.62, 0)
+      g.add(bracket)
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.46, 6), wood)
+      stick.position.y = 0.82
+      g.add(stick)
+      const flame = new THREE.Sprite(this.flameMat)
+      flame.name = 'flame'
+      flame.position.y = 1.12
+      flame.scale.set(0.7, 1.05, 1)
+      g.add(flame)
+      g.position.set(spot.x, 0, spot.z)
+      this.scene.add(g)
+      this.torchGroups.push(g)
+    }
   }
 
   private syncHearts(world: World): void {
@@ -584,13 +650,14 @@ export class DungeonView {
         const mat = new THREE.MeshStandardMaterial({
           color: t.heart === 1 ? 0xff2438 : 0x6688ff,
           emissive: t.heart === 1 ? 0xff1028 : 0x2244cc,
-          emissiveIntensity: 0.9,
+          emissiveIntensity: 0.42,
           roughness: 0.42,
         })
         const lobes: [number, number, number, number, number, number][] = [
-          [1.1, 0.85, 0.8, -0.12, 0.72, 0],
-          [1.1, 0.85, 0.8, 0.12, 0.72, 0],
-          [0.7, 1.15, 0.7, 0, 0.48, 0.02],
+          [1.35, 1.05, 0.95, -0.22, 1.15, 0.02],
+          [1.35, 1.05, 0.95, 0.22, 1.15, -0.02],
+          [0.85, 1.45, 0.85, 0, 0.72, 0.04],
+          [0.55, 0.7, 0.55, 0, 1.55, 0],
         ]
         for (const [sx, sy, sz, px, py, pz] of lobes) {
           const lobe = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), mat)
@@ -599,22 +666,54 @@ export class DungeonView {
           lobe.castShadow = true
           g.add(lobe)
         }
-        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.46, 0.22, 8), new THREE.MeshStandardMaterial({ color: 0x2a1818, roughness: 0.8 }))
-        base.position.y = 0.16
+        const stone = new THREE.MeshStandardMaterial({ color: 0x2a2628, roughness: 0.86, metalness: 0.08 })
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.7, 0.28, 8), stone)
+        base.position.y = 0.14
         g.add(base)
+        const plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.42, 0.35, 8), stone)
+        plinth.position.y = 0.4
+        g.add(plinth)
+        const core = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), new THREE.MeshStandardMaterial({ color: 0xffd0d8, emissive: 0xff2040, emissiveIntensity: 2.2, roughness: 0.3 }))
+        core.position.y = 1.2
+        g.add(core)
       } else {
         g.userData.spin = true
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.05, 8, 24), new THREE.MeshStandardMaterial({ color: 0xd090ff, emissive: 0x7020c0, emissiveIntensity: 1.1, roughness: 0.25, metalness: 0.3 }))
+        const stone = new THREE.MeshStandardMaterial({ color: 0x3a3438, roughness: 0.8, metalness: 0.12 })
+        for (const side of [-0.55, 0.55]) {
+          const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.22, 1.35, 0.22), stone)
+          pillar.position.set(side, 0.7, 0)
+          g.add(pillar)
+        }
+        const arch = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.08, 8, 18, Math.PI), stone)
+        arch.rotation.z = Math.PI
+        arch.rotation.y = Math.PI / 2
+        arch.position.y = 1.25
+        g.add(arch)
+        const vortex = new THREE.ShaderMaterial({
+          transparent: true,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          uniforms: { uTime: { value: 0 } },
+          vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+          fragmentShader: `uniform float uTime; varying vec2 vUv;
+            void main(){
+              vec2 p = vUv * 2.0 - 1.0;
+              float r = length(p);
+              float a = atan(p.y, p.x);
+              float arm = 0.5 + 0.5 * sin(a * 6.0 - uTime * 2.8 + r * 14.0);
+              float disc = smoothstep(1.0, 0.15, r);
+              vec3 col = mix(vec3(0.05, 0.0, 0.08), vec3(0.75, 0.35, 1.0), arm);
+              gl_FragColor = vec4(col, disc * (0.25 + 0.65 * arm));
+            }`,
+        })
+        const disc = new THREE.Mesh(new THREE.CircleGeometry(0.62, 28), vortex)
+        disc.name = 'vortex'
+        disc.position.y = 0.85
+        g.add(disc)
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.48, 0.035, 8, 24), new THREE.MeshStandardMaterial({ color: 0xc080ff, emissive: 0x8020e0, emissiveIntensity: 1.4, roughness: 0.25 }))
         ring.rotation.x = Math.PI / 2
-        ring.position.y = 0.62
+        ring.position.y = 0.9
         g.add(ring)
-        const ring2 = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 20), new THREE.MeshStandardMaterial({ color: 0x88e0ff, emissive: 0x2060ff, emissiveIntensity: 1.2, roughness: 0.2 }))
-        ring2.rotation.x = Math.PI / 2
-        ring2.position.y = 0.62
-        g.add(ring2)
-        const well = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.16, 10), new THREE.MeshStandardMaterial({ color: 0x1a1020, roughness: 0.7 }))
-        well.position.y = 0.12
-        g.add(well)
       }
       g.position.set(gx(world.width, i) + 0.5, 0, gy(world.width, i) + 0.5)
       this.scene.add(g)
@@ -625,12 +724,12 @@ export class DungeonView {
   private syncLights(world: World): void {
     const spots: { x: number; z: number; color: number; intensity: number }[] = []
     const k = world.keepers[1]
-    if (k && k.heart >= 0) spots.push({ x: gx(world.width, k.heart) + 0.5, z: gy(world.width, k.heart) + 0.5, color: 0xff4455, intensity: 2.4 })
-    if (k && k.portal >= 0) spots.push({ x: gx(world.width, k.portal) + 0.5, z: gy(world.width, k.portal) + 0.5, color: 0xc070ff, intensity: 1.8 })
+    if (k && k.heart >= 0) spots.push({ x: gx(world.width, k.heart) + 0.5, z: gy(world.width, k.heart) + 0.5, color: 0xff3348, intensity: 6.5 })
+    if (k && k.portal >= 0) spots.push({ x: gx(world.width, k.portal) + 0.5, z: gy(world.width, k.portal) + 0.5, color: 0x9944ff, intensity: 3.2 })
     const cx = this.target.x
     const cz = this.target.z
-    const nearTorches = [...this.torchSpots].sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz)).slice(0, 6)
-    for (const torch of nearTorches) spots.push({ x: torch.x, z: torch.z, color: 0xffaa55, intensity: 1.15 })
+    const nearTorches = [...this.torchSpots].sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz)).slice(0, 4)
+    for (const torch of nearTorches) spots.push({ x: torch.x, z: torch.z, color: 0xff6818, intensity: 5.5 })
     let lava = 0
     for (let i = 0; i < world.tiles.length && lava < 4; i++) {
       const t = world.tiles[i]!
@@ -650,8 +749,10 @@ export class DungeonView {
         light.intensity = 0
         continue
       }
-      light.position.set(spot.x, 1.6, spot.z)
+      light.position.set(spot.x, 1.15, spot.z)
       light.color.setHex(spot.color)
+      light.distance = 8
+      light.decay = 2
       light.intensity = spot.intensity * flicker
     }
   }
@@ -663,17 +764,39 @@ export class DungeonView {
       if (c.dead) continue
       live.add(c.id)
       let group = this.actors.get(c.id)
+      if (group?.userData.fallback && modelReady(c.kind)) {
+        this.scene.remove(group)
+        this.actors.delete(c.id)
+        this.rigs.delete(c.id)
+        group = undefined
+      }
       if (!group) {
-        group = buildCreature(species(c.kind).look)
+        const rig = makeRig(c.kind, buildCreature, species(c.kind).look)
+        group = rig.group
         group.traverse((obj) => { obj.castShadow = true; obj.receiveShadow = true })
         group.userData.creatureId = c.id
         group.userData.hp = c.hp
         group.userData.hit = 0
         this.actors.set(c.id, group)
+        this.rigs.set(c.id, rig)
         this.scene.add(group)
       }
+      const rig = this.rigs.get(c.id)
+      if (rig?.mixer) {
+        const moving = c.path.length > c.pathI && c.unconscious <= 0 && !c.held
+        const fighting = c.mode === 'fight' || (c.job !== '' && c.pathI >= c.path.length && !c.held)
+        playRig(rig, fighting ? 'attack' : moving ? 'walk' : 'idle')
+        rig.mixer.update(dt)
+      }
       const prevHp = group.userData.hp as number
-      if (c.hp < prevHp - 0.4) group.userData.hit = 0.28
+      if (c.hp < prevHp - 0.4) {
+        group.userData.hit = 0.28
+        if (this.quality !== 'low') this.fx.burst(c.x, 0.6, c.y, 0xffe6a0, 10, 2.4)
+      }
+      if (!this.seen.has(c.id)) {
+        this.seen.add(c.id)
+        if (c.owner > 0 && this.quality !== 'low') this.fx.burst(c.x, 0.9, c.y, 0xc060ff, 16, 1.7)
+      }
       group.userData.hp = c.hp
       if ((group.userData.hit as number) > 0) group.userData.hit = Math.max(0, (group.userData.hit as number) - dt)
       const ox = ((c.id * 17) % 7 - 3) * 0.03
@@ -696,18 +819,19 @@ export class DungeonView {
       const moving = c.path.length > c.pathI && c.unconscious <= 0 && !c.held && !sleeping
       const swing = moving || working ? Math.sin(this.clock * (working ? 16 : 10) * (0.6 + species(c.kind).speed * 0.15)) : 0
       const fighting = c.mode === 'fight' && c.cool < 0.28
-      const parts = group.userData.parts as Parts
-      if (parts.legL) parts.legL.rotation.x = swing * 0.7
-      if (parts.legR) parts.legR.rotation.x = -swing * 0.7
-      if (parts.armL) parts.armL.rotation.x = working ? -1.1 : -swing * 0.5
-      if (parts.armR) parts.armR.rotation.x = fighting ? -1.45 : working ? 0.9 : swing * 0.4
-      if (parts.body) parts.body.position.y = parts.bodyBase + (moving || working ? Math.abs(swing) * 0.05 : Math.sin(this.clock * 2 + c.id) * 0.02)
+      const parts = group.userData.parts as Parts | undefined
+      if (parts?.legL) parts.legL.rotation.x = swing * 0.7
+      if (parts?.legR) parts.legR.rotation.x = -swing * 0.7
+      if (parts?.armL) parts.armL.rotation.x = working ? -1.1 : -swing * 0.5
+      if (parts?.armR) parts.armR.rotation.x = fighting ? -1.45 : working ? 0.9 : swing * 0.4
+      if (parts?.body) parts.body.position.y = parts.bodyBase + (moving || working ? Math.abs(swing) * 0.05 : Math.sin(this.clock * 2 + c.id) * 0.02)
       if (working && c.jobTile >= 0) {
         const jx = gx(world.width, c.jobTile) + 0.5
         const jz = gy(world.width, c.jobTile) + 0.5
         group.rotation.y = -Math.atan2(jx - c.x, jz - c.y)
       } else group.rotation.y = -c.facing
       group.rotation.z = c.unconscious > 0 || c.carried || sleeping ? Math.PI / 2.3 : 0
+      group.rotation.x = c.held ? 0.9 : 0
       const chick = group.getObjectByName('chick')
       if (chick) chick.visible = c.chicken > 0
       const loot = group.getObjectByName('loot')
@@ -1012,4 +1136,20 @@ function buildCreature(look: Look): THREE.Group {
   root.add(eye)
   root.userData.parts = parts
   return root
+}
+
+function flameTexture(): THREE.Texture {
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = 64
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createRadialGradient(32, 40, 2, 32, 28, 30)
+  g.addColorStop(0, 'rgba(255,250,220,1)')
+  g.addColorStop(0.35, 'rgba(255,150,30,0.95)')
+  g.addColorStop(0.7, 'rgba(200,40,0,0.45)')
+  g.addColorStop(1, 'rgba(80,0,0,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, 64, 64)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
 }

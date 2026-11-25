@@ -565,6 +565,7 @@ export class Game {
       },
       notes() { return (worldOf()?.notes ?? []).map((n) => n.text) },
       chickens() { return (worldOf()?.rooms ?? []).reduce((n, r) => n + (r.type === 'hatchery' ? r.chickens : 0), 0) },
+      stats: () => this.view?.stats() ?? { calls: 0, triangles: 0 },
       screen: (x: number, y: number, height = 0.45) => {
         const canvas = this.root.querySelector('#gl') as HTMLCanvasElement | null
         const p = this.view?.project(x, height, y)
