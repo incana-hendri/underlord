@@ -6,7 +6,23 @@ Underlord is an original game inspired by the dungeon-keeping genre. It does not
 
 All gameplay code, tile geometry, creature meshes, user-interface art, and the small synthesizer in `src/audio/bus.ts` are original to this project. The synthesizer is a short original oscillator (not a copy of sfxr). Those sounds are the project's own.
 
-Procedural canvas textures (rock, earth, gold, gems, floors, water, lava, wood) are generated at runtime in `src/render/view.ts`. No texture files are vendored.
+The clawed hand, creature silhouettes, room props, torch meshes, particle sprites, and interface icons are original geometry in `src/render/`. They are not ripped from another game.
+
+## Textures — ambientCG (CC0)
+
+Surface maps in `public/textures/` are 1K JPGs from [ambientCG](https://ambientcg.com/), which publishes them under Creative Commons Zero (CC0 1.0). Normal maps are the OpenGL (`NormalGL`) variants. Only color, normal, roughness, and (for metal) metalness were kept.
+
+| Files | ambientCG id |
+| --- | --- |
+| `rock_color.jpg`, `rock_normal.jpg`, `rock_rough.jpg` | Rock035 |
+| `earth_color.jpg`, `earth_normal.jpg`, `earth_rough.jpg` | Ground037 |
+| `brick_color.jpg`, `brick_normal.jpg`, `brick_rough.jpg` | Bricks059 |
+| `floor_color.jpg`, `floor_normal.jpg`, `floor_rough.jpg` | PavingStones130 |
+| `metal_color.jpg`, `metal_normal.jpg`, `metal_rough.jpg`, `metal_metal.jpg` | Metal034 |
+
+## Type — Cinzel (OFL)
+
+`public/fonts/cinzel-latin-500.woff2` is Cinzel, designed by Natanael Gama, under the SIL Open Font License 1.1. The file is the Latin 500-weight subset published by [Fontsource](https://fontsource.org/fonts/cinzel). Panel titles use it. Body text stays a system serif so the log stays readable.
 
 ## Narration — Kokoro
 

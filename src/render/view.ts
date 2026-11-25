@@ -4,89 +4,22 @@ import type { Look } from '../data/content.ts'
 import { gx, gy } from '../sim/grid.ts'
 import { Terrain, type Creature } from '../sim/types.ts'
 import type { World } from '../sim/world.ts'
+import {
+  block,
+  buildClaw,
+  environment,
+  makeStage,
+  makeSurfaces,
+  Particles,
+  poseClaw,
+  readQuality,
+  type Quality,
+  type Stage,
+  type Surfaces,
+} from './look.ts'
 
 const DUMMY = new THREE.Object3D()
 const COLOR = new THREE.Color()
-
-function tex(paint: (ctx: CanvasRenderingContext2D, s: number) => void, size = 64): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = size
-  const ctx = canvas.getContext('2d')!
-  paint(ctx, size)
-  const t = new THREE.CanvasTexture(canvas)
-  t.colorSpace = THREE.SRGBColorSpace
-  t.wrapS = t.wrapT = THREE.RepeatWrapping
-  t.magFilter = THREE.LinearFilter
-  t.anisotropy = 4
-  return t
-}
-
-function speckle(ctx: CanvasRenderingContext2D, s: number, color: string, n: number): void {
-  ctx.fillStyle = color
-  for (let i = 0; i < n; i++) ctx.fillRect(Math.random() * s, Math.random() * s, 2, 2)
-}
-
-function makeTextures() {
-  const rock = tex((ctx, s) => {
-    ctx.fillStyle = '#3a342f'
-    ctx.fillRect(0, 0, s, s)
-    for (let y = 4; y < s; y += 10) {
-      ctx.fillStyle = y % 20 === 4 ? '#4a433c' : '#2e2926'
-      ctx.fillRect(0, y, s, 3)
-    }
-    speckle(ctx, s, '#6a625a', 30)
-  })
-  const earth = tex((ctx, s) => {
-    ctx.fillStyle = '#6b4a2c'
-    ctx.fillRect(0, 0, s, s)
-    speckle(ctx, s, '#8a6240', 40)
-    speckle(ctx, s, '#3a2818', 24)
-  })
-  const gold = tex((ctx, s) => {
-    ctx.fillStyle = '#8a6a28'
-    ctx.fillRect(0, 0, s, s)
-    ctx.fillStyle = '#e6c25a'
-    for (let i = 0; i < 18; i++) ctx.fillRect(Math.random() * s, Math.random() * s, 6, 4)
-  })
-  const gem = tex((ctx, s) => {
-    ctx.fillStyle = '#1c4a48'
-    ctx.fillRect(0, 0, s, s)
-    ctx.fillStyle = '#5ef0d0'
-    for (let i = 0; i < 12; i++) ctx.fillRect(Math.random() * s, Math.random() * s, 5, 5)
-  })
-  const floor = tex((ctx, s) => {
-    ctx.fillStyle = '#2a2420'
-    ctx.fillRect(0, 0, s, s)
-    ctx.fillStyle = '#4a4038'
-    ctx.fillRect(3, 3, s - 6, s - 6)
-    speckle(ctx, s, '#6a5c50', 16)
-  })
-  const water = tex((ctx, s) => {
-    ctx.fillStyle = '#163e62'
-    ctx.fillRect(0, 0, s, s)
-    ctx.strokeStyle = '#8fd0ff'
-    ctx.globalAlpha = 0.45
-    for (let y = 6; y < s; y += 8) {
-      ctx.beginPath()
-      ctx.moveTo(0, y)
-      ctx.bezierCurveTo(s * 0.3, y - 3, s * 0.7, y + 3, s, y)
-      ctx.stroke()
-    }
-  })
-  const lava = tex((ctx, s) => {
-    ctx.fillStyle = '#7a2208'
-    ctx.fillRect(0, 0, s, s)
-    ctx.fillStyle = '#ffb03a'
-    for (let i = 0; i < 20; i++) ctx.fillRect(Math.random() * s, Math.random() * s, 10, 3)
-  })
-  const wood = tex((ctx, s) => {
-    ctx.fillStyle = '#6a4428'
-    ctx.fillRect(0, 0, s, s)
-    ctx.fillStyle = '#8a5c34'
-    for (let x = 0; x < s; x += 8) ctx.fillRect(x, 0, 4, s)
-  })
-  return { rock, earth, gold, gem, floor, water, lava, wood }
-}
 
 interface Bucket {
   mesh: THREE.InstancedMesh
@@ -99,10 +32,6 @@ function bucket(geo: THREE.BufferGeometry, material: THREE.Material, cap: number
   mesh.count = 0
   mesh.frustumCulled = false
   return { mesh, base }
-}
-
-function lam(map: THREE.Texture | null, color = 0xffffff, emissive = 0x000000): THREE.MeshLambertMaterial {
-  return new THREE.MeshLambertMaterial({ map: map ?? undefined, color, emissive })
 }
 
 export class DungeonView {
@@ -130,7 +59,21 @@ export class DungeonView {
     new THREE.RingGeometry(0.42, 0.52, 24),
     new THREE.MeshBasicMaterial({ color: 0xe6c878, side: THREE.DoubleSide }),
   )
-  private hand = buildHand()
+  private claw = buildClaw()
+  private surfaces: Surfaces = makeSurfaces()
+  private quality: Quality = readQuality()
+  private direct = false
+  private sun!: THREE.DirectionalLight
+  private stage!: Stage
+  private fx!: Particles
+  private handShadow!: THREE.Mesh
+  private propMesh!: THREE.InstancedMesh
+  private torchMesh!: THREE.InstancedMesh
+  private flameMesh!: THREE.InstancedMesh
+  private digState: Float32Array | null = null
+  private propN = 0
+  private torchN = 0
+  private torchSpots: { x: number; z: number }[] = []
   private tagMesh!: THREE.InstancedMesh
   private chickenMesh!: THREE.InstancedMesh
   private banner = new THREE.Mesh(
@@ -150,33 +93,75 @@ export class DungeonView {
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1))
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.12
-    this.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 400)
-    this.scene.background = new THREE.Color(0x07060a)
-    this.scene.fog = new THREE.FogExp2(0x07060a, 0.012)
-    this.scene.add(new THREE.AmbientLight(0x6a5a68, 0.55))
-    this.scene.add(new THREE.HemisphereLight(0x8aa0c8, 0x3a2018, 0.45))
-    const sun = new THREE.DirectionalLight(0xffe2c0, 0.55)
-    sun.position.set(40, 70, 20)
-    this.scene.add(sun)
-    for (let i = 0; i < 10; i++) {
-      const light = new THREE.PointLight(0xffaa66, 0, 14, 2)
+    this.renderer.toneMappingExposure = 1.05
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    this.camera = new THREE.PerspectiveCamera(42, 1, 0.15, 280)
+    this.scene.background = new THREE.Color(0x07060e)
+    this.scene.fog = new THREE.FogExp2(0x100c16, 0.02)
+    this.scene.environment = environment(this.renderer)
+    this.scene.add(new THREE.AmbientLight(0x3a3048, 0.38))
+    this.scene.add(new THREE.HemisphereLight(0x8aa0c8, 0x2a1410, 0.28))
+    this.sun = new THREE.DirectionalLight(0xffd2a8, 1.35)
+    this.sun.castShadow = true
+    this.sun.shadow.mapSize.set(1024, 1024)
+    this.sun.shadow.camera.near = 2
+    this.sun.shadow.camera.far = 70
+    this.sun.shadow.camera.left = -18
+    this.sun.shadow.camera.right = 18
+    this.sun.shadow.camera.top = 18
+    this.sun.shadow.camera.bottom = -18
+    this.sun.shadow.bias = -0.0004
+    this.sun.shadow.normalBias = 0.03
+    this.scene.add(this.sun)
+    this.scene.add(this.sun.target)
+    for (let i = 0; i < 6; i++) {
+      const light = new THREE.PointLight(0xffaa66, 0, 12, 2)
+      light.castShadow = false
       this.lights.push(light)
       this.scene.add(light)
     }
     this.hover.rotation.x = -Math.PI / 2
     this.hover.visible = false
     this.scene.add(this.hover)
-    this.hand.visible = false
-    this.scene.add(this.hand)
+    this.claw.group.visible = false
+    this.scene.add(this.claw.group)
+    this.handShadow = new THREE.Mesh(
+      new THREE.CircleGeometry(0.42, 16),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4, depthWrite: false }),
+    )
+    this.handShadow.rotation.x = -Math.PI / 2
+    this.handShadow.visible = false
+    this.scene.add(this.handShadow)
+    this.fx = new Particles(this.quality === 'low' ? 180 : 520)
+    this.scene.add(this.fx.points)
     this.banner.visible = false
     this.scene.add(this.banner)
+    this.setQuality(this.quality)
+  }
+
+  setQuality(q: Quality): void {
+    this.quality = q
+    const dpr = window.devicePixelRatio || 1
+    const pr = q === 'high' ? Math.min(1.6, dpr) : q === 'low' ? 1 : Math.min(1.25, dpr)
+    this.renderer.setPixelRatio(pr)
+    this.direct = q === 'low'
+    this.renderer.shadowMap.enabled = q === 'high'
+    const map = q === 'high' ? 1024 : 512
+    this.sun.shadow.mapSize.set(map, map)
+    this.sun.castShadow = q === 'high'
+    const budget = q === 'high' ? 4 : q === 'low' ? 2 : 3
+    this.lights.forEach((light, i) => { light.visible = i < budget })
+    this.stage = makeStage(this.renderer, this.scene, this.camera, q)
+    const canvas = this.renderer.domElement
+    this.setSize(canvas.clientWidth || 1, canvas.clientHeight || 1)
   }
 
   setSize(width: number, height: number): void {
     this.renderer.setSize(width, height, false)
     this.camera.aspect = width / Math.max(1, height)
     this.camera.updateProjectionMatrix()
+    this.stage?.composer.setSize(width, height)
   }
 
   focus(x: number, z: number, distance?: number): void {
@@ -232,7 +217,7 @@ export class DungeonView {
     this.hover.visible = !!hover
     if (hover) this.hover.position.set(hover.x + 0.5, 0.22, hover.y + 0.5)
     const slapping = world.creatures.some((c) => c.slap > 7.15)
-    this.placeHand(world, hover, slapping)
+    this.placeHand(world, hover, slapping, held.length)
     const k = world.keepers[1]
     if (k && k.rallyT > 0) {
       this.banner.visible = true
@@ -246,12 +231,25 @@ export class DungeonView {
       lava.emissiveIntensity = 0.7 + Math.sin(this.clock * 6) * 0.2
     }
     for (const heart of this.hearts) {
-      heart.rotation.y += dt * 0.6
-      const s = 1 + Math.sin(this.clock * 3) * 0.06
-      heart.scale.setScalar(s)
+      if (heart.userData.spin) {
+        const ring = heart.children[0]
+        const ring2 = heart.children[1]
+        if (ring) ring.rotation.z += dt * 1.6
+        if (ring2) ring2.rotation.z -= dt * 2.1
+      } else {
+        heart.rotation.y += dt * 0.45
+        const s = 1 + Math.sin(this.clock * 3) * 0.07
+        heart.scale.setScalar(s)
+      }
     }
+    this.sun.position.set(this.target.x + 12, 26, this.target.z + 7)
+    this.sun.target.position.set(this.target.x, 0, this.target.z)
+    this.surfaces.gem.emissiveIntensity = 0.7 + Math.sin(this.clock * 5) * 0.28
+    this.surfaces.lava.emissiveIntensity = 1.15 + Math.sin(this.clock * 6) * 0.35
+    this.fx.update(dt)
     this.smooth(dt, world)
-    this.renderer.render(this.scene, this.camera)
+    if (this.direct) this.renderer.render(this.scene, this.camera)
+    else this.stage.composer.render()
   }
 
   pick(clientX: number, clientY: number, world: World): { x: number; y: number; creatureId: number } | null {
@@ -315,25 +313,31 @@ export class DungeonView {
     if (this.cap === cap && this.buckets.rock) return
     this.cap = cap
     for (const b of Object.values(this.buckets)) this.scene.remove(b.mesh)
-    const maps = makeTextures()
-    const box = (h: number) => new THREE.BoxGeometry(1, h, 1)
+    const s = this.surfaces
+    const stone = (h: number, r: number) => block(h, r)
     this.buckets = {
-      rock: bucket(box(2.05), lam(maps.rock), cap, 2.05),
-      earth: bucket(box(1.62), lam(maps.earth), cap, 1.62),
-      gold: bucket(box(1.62), lam(maps.gold, 0xffffff, 0x3a2800), cap, 1.62),
-      gem: bucket(box(1.62), lam(maps.gem, 0xffffff, 0x043830), cap, 1.62),
-      floorYou: bucket(box(0.16), lam(maps.floor, 0xc05060), cap, 0.16),
-      floorFoe: bucket(box(0.16), lam(maps.floor, 0x5060b0), cap, 0.16),
-      floorOpen: bucket(box(0.16), lam(maps.floor, 0x8a7564), cap, 0.16),
-      water: bucket(new THREE.BoxGeometry(1, 0.1, 1), lam(maps.water, 0xffffff, 0x062030), cap, 0.1),
-      lava: bucket(new THREE.BoxGeometry(1, 0.12, 1), lam(maps.lava, 0xffffff, 0xff5a10), cap, 0.12),
-      bridge: bucket(box(0.18), lam(maps.wood), cap, 0.18),
+      rock: bucket(stone(2.05, 0.09), s.rock, cap, 2.05),
+      brick: bucket(stone(2.15, 0.05), s.brick, cap, 2.15),
+      earth: bucket(stone(1.62, 0.07), s.earth, cap, 1.62),
+      gold: bucket(stone(1.62, 0.07), s.gold, cap, 1.62),
+      gem: bucket(stone(1.62, 0.06), s.gem, cap, 1.62),
+      floorYou: bucket(stone(0.16, 0.03), s.floor, cap, 0.16),
+      floorFoe: bucket(stone(0.16, 0.03), s.floor, cap, 0.16),
+      floorOpen: bucket(stone(0.16, 0.03), s.floor, cap, 0.16),
+      water: bucket(new THREE.BoxGeometry(0.98, 0.1, 0.98), s.water, cap, 0.1),
+      lava: bucket(new THREE.BoxGeometry(0.98, 0.12, 0.98), s.lava, cap, 0.12),
+      bridge: bucket(stone(0.18, 0.02), s.wood, cap, 0.18),
     }
-    for (const b of Object.values(this.buckets)) this.scene.add(b.mesh)
+    for (const b of Object.values(this.buckets)) {
+      b.mesh.castShadow = false
+      b.mesh.receiveShadow = true
+      this.scene.add(b.mesh)
+    }
+    this.digState = new Float32Array(cap)
     this.roomMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.92, 0.05, 0.92), new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0x221108 }), cap)
     this.roomMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3)
     this.roomMesh.frustumCulled = false
-    this.nuggetMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.16, 0), new THREE.MeshLambertMaterial({ color: 0xffd56a, emissive: 0x5a3a00 }), cap)
+    this.nuggetMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.16, 0), new THREE.MeshStandardMaterial({ color: 0xffd56a, emissive: 0x8a4a00, emissiveIntensity: 0.6, metalness: 1, roughness: 0.28 }), cap)
     this.markMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(0.2, 0.72, 5), new THREE.MeshBasicMaterial({ color: 0xffffff }), cap)
     this.markMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3)
     this.tagMesh = new THREE.InstancedMesh(
@@ -346,13 +350,20 @@ export class DungeonView {
     this.chickenMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(0.12, 0.22, 5), new THREE.MeshLambertMaterial({ color: 0xfff0b0, emissive: 0x5a4010 }), 200)
     this.chickenMesh.frustumCulled = false
     this.chickenMesh.count = 0
-    this.doorMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.28, 1.15, 0.9), lam(maps.wood), Math.min(cap, 400))
+    const propCap = Math.min(cap, 900)
+    this.propMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.05 }), propCap)
+    this.propMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(propCap * 3), 3)
+    this.torchMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.04, 0.05, 0.42, 5), new THREE.MeshStandardMaterial({ color: 0x4a3020, roughness: 0.8 }), 80)
+    this.flameMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(0.09, 0.26, 6), new THREE.MeshBasicMaterial({ color: 0xffe090 }), 80)
+    this.doorMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.28, 1.15, 0.9), this.surfaces.wood, Math.min(cap, 400))
     this.doorMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.min(cap, 400) * 3), 3)
     this.trapMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.18, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }), Math.min(cap, 400))
     this.trapMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.min(cap, 400) * 3), 3)
-    for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.tagMesh, this.doorMesh, this.trapMesh, this.chickenMesh]) {
+    for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.tagMesh, this.doorMesh, this.trapMesh, this.chickenMesh, this.propMesh, this.torchMesh, this.flameMesh]) {
       m.frustumCulled = false
       m.count = 0
+      m.castShadow = m !== this.tagMesh && m !== this.flameMesh
+      m.receiveShadow = m !== this.tagMesh && m !== this.flameMesh
       this.scene.add(m)
     }
     this.lastMap = -1
@@ -427,6 +438,9 @@ export class DungeonView {
     let marks = 0
     let doors = 0
     let traps = 0
+    this.propN = 0
+    this.torchN = 0
+    this.torchSpots = []
     const roomColors: Record<string, number> = {
       treasury: 0xc6a15a, lair: 0x8a5040, hatchery: 0xd8c060, training: 0xb45040, library: 0x6070c0,
       workshop: 0xc07838, prison: 0x808890, torture: 0xa02840, barracks: 0x803030, guard: 0xd0d4dc,
@@ -443,16 +457,18 @@ export class DungeonView {
         counts.rock = this.put(this.buckets.rock!, counts.rock!, x, z, 1, 0x121014)
         continue
       }
-      if (t.terrain === Terrain.Rock) counts.rock = this.put(this.buckets.rock!, counts.rock!, x, z, (t.reinforced ? 1.08 : 1) * (1 - t.dig * 0.15), t.reinforced ? 0x9aa4b0 : shade)
-      else if (t.terrain === Terrain.Earth) counts.earth = this.put(this.buckets.earth!, counts.earth!, x, z, 1 - t.dig * 0.85, shade)
+      if (t.terrain === Terrain.Rock) {
+        if (t.reinforced) counts.brick = this.put(this.buckets.brick!, counts.brick!, x, z, 1, dim ? 0x6a7078 : 0xd5dbe4)
+        else counts.rock = this.put(this.buckets.rock!, counts.rock!, x, z, 1 - t.dig * 0.15, dim ? 0x5a5450 : 0xc8beb4)
+      } else if (t.terrain === Terrain.Earth) counts.earth = this.put(this.buckets.earth!, counts.earth!, x, z, 1 - t.dig * 0.85, shade)
       else if (t.terrain === Terrain.Gold) counts.gold = this.put(this.buckets.gold!, counts.gold!, x, z, 1 - t.dig * 0.85, shade)
       else if (t.terrain === Terrain.Gem) counts.gem = this.put(this.buckets.gem!, counts.gem!, x, z, 1 - t.dig * 0.85, shade)
       else if (t.terrain === Terrain.Water && !t.bridge) counts.water = this.put(this.buckets.water!, counts.water!, x, z, 1, shade)
       else if (t.terrain === Terrain.Lava && !t.bridge) counts.lava = this.put(this.buckets.lava!, counts.lava!, x, z, 1, shade)
       else if (t.bridge) counts.bridge = this.put(this.buckets.bridge!, counts.bridge!, x, z, 1, shade)
-      else if (t.owner === 1) counts.floorYou = this.put(this.buckets.floorYou!, counts.floorYou!, x, z, 1, shade)
-      else if (t.owner > 1) counts.floorFoe = this.put(this.buckets.floorFoe!, counts.floorFoe!, x, z, 1, shade)
-      else counts.floorOpen = this.put(this.buckets.floorOpen!, counts.floorOpen!, x, z, 1, shade)
+      else if (t.owner === 1) counts.floorYou = this.put(this.buckets.floorYou!, counts.floorYou!, x, z, 1, dim ? 0x6a4038 : 0xd8a090)
+      else if (t.owner > 1) counts.floorFoe = this.put(this.buckets.floorFoe!, counts.floorFoe!, x, z, 1, dim ? 0x303848 : 0x6a78c8)
+      else counts.floorOpen = this.put(this.buckets.floorOpen!, counts.floorOpen!, x, z, 1, dim ? 0x4a4440 : 0xa09080)
       if (t.room && t.terrain === Terrain.Floor) {
         DUMMY.position.set(x + 0.5, 0.2, z + 0.5)
         DUMMY.scale.set(1, 1, 1)
@@ -462,6 +478,33 @@ export class DungeonView {
         COLOR.setHex(roomColors[t.room] ?? 0x888888)
         this.roomMesh.setColorAt(rooms, COLOR)
         rooms++
+        this.decorate(world, t.room, t.owner, x, z)
+      }
+      if (this.digState && revealed && t.dig > (this.digState[i] ?? 0) + 0.06 && this.quality !== 'low') {
+        const crumb = t.terrain === Terrain.Gold ? 0xffd56a : t.terrain === Terrain.Gem ? 0x7dfff0 : 0x8a5a32
+        this.fx.burst(x + 0.5, 1.15, z + 0.5, crumb, 6, 1.8)
+      }
+      if (this.digState) this.digState[i] = t.dig
+      if (t.owner > 0 && t.terrain === Terrain.Floor && (i % 6) === 0 && this.torchN < 64) {
+        const w = world.width
+        const nb = [i - 1, i + 1, i - w, i + w]
+        const walled = nb.some((j) => {
+          const n = world.tiles[j]
+          return n && (n.terrain === Terrain.Rock || n.terrain === Terrain.Earth || n.terrain === Terrain.Gold)
+        })
+        if (walled) {
+          DUMMY.position.set(x + 0.62, 0.42, z + 0.62)
+          DUMMY.scale.set(1.4, 1.3, 1.4)
+          DUMMY.rotation.set(0, 0, 0)
+          DUMMY.updateMatrix()
+          this.torchMesh.setMatrixAt(this.torchN, DUMMY.matrix)
+          DUMMY.position.set(x + 0.62, 0.78, z + 0.62)
+          DUMMY.scale.set(1.8, 2.1, 1.8)
+          DUMMY.updateMatrix()
+          this.flameMesh.setMatrixAt(this.torchN, DUMMY.matrix)
+          this.torchSpots.push({ x: x + 0.62, z: z + 0.62 })
+          this.torchN++
+        }
       }
       if (t.terrain === Terrain.Floor && t.gold > 0) {
         DUMMY.position.set(x + 0.5, 0.32, z + 0.5)
@@ -519,7 +562,10 @@ export class DungeonView {
     this.tagMesh.count = marks
     this.doorMesh.count = doors
     this.trapMesh.count = traps
-    for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.tagMesh, this.doorMesh, this.trapMesh]) {
+    this.propMesh.count = this.propN
+    this.torchMesh.count = this.torchN
+    this.flameMesh.count = this.torchN
+    for (const m of [this.roomMesh, this.nuggetMesh, this.markMesh, this.tagMesh, this.doorMesh, this.trapMesh, this.propMesh, this.torchMesh, this.flameMesh]) {
       m.instanceMatrix.needsUpdate = true
       if (m.instanceColor) m.instanceColor.needsUpdate = true
     }
@@ -535,17 +581,40 @@ export class DungeonView {
       if (!world.revealed[i]) continue
       const g = new THREE.Group()
       if (t.heart) {
-        const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0), new THREE.MeshLambertMaterial({ color: t.heart === 1 ? 0xff3355 : 0x6688ff, emissive: t.heart === 1 ? 0x6a0018 : 0x102060 }))
-        crystal.position.y = 0.7
-        g.add(crystal)
-        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.2, 6), new THREE.MeshLambertMaterial({ color: 0x2a1818 }))
-        base.position.y = 0.2
+        const mat = new THREE.MeshStandardMaterial({
+          color: t.heart === 1 ? 0xff2438 : 0x6688ff,
+          emissive: t.heart === 1 ? 0xff1028 : 0x2244cc,
+          emissiveIntensity: 0.9,
+          roughness: 0.42,
+        })
+        const lobes: [number, number, number, number, number, number][] = [
+          [1.1, 0.85, 0.8, -0.12, 0.72, 0],
+          [1.1, 0.85, 0.8, 0.12, 0.72, 0],
+          [0.7, 1.15, 0.7, 0, 0.48, 0.02],
+        ]
+        for (const [sx, sy, sz, px, py, pz] of lobes) {
+          const lobe = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), mat)
+          lobe.scale.set(sx, sy, sz)
+          lobe.position.set(px, py, pz)
+          lobe.castShadow = true
+          g.add(lobe)
+        }
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.46, 0.22, 8), new THREE.MeshStandardMaterial({ color: 0x2a1818, roughness: 0.8 }))
+        base.position.y = 0.16
         g.add(base)
       } else {
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.07, 8, 16), new THREE.MeshLambertMaterial({ color: 0xb060ff, emissive: 0x301050 }))
+        g.userData.spin = true
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.05, 8, 24), new THREE.MeshStandardMaterial({ color: 0xd090ff, emissive: 0x7020c0, emissiveIntensity: 1.1, roughness: 0.25, metalness: 0.3 }))
         ring.rotation.x = Math.PI / 2
-        ring.position.y = 0.55
+        ring.position.y = 0.62
         g.add(ring)
+        const ring2 = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 20), new THREE.MeshStandardMaterial({ color: 0x88e0ff, emissive: 0x2060ff, emissiveIntensity: 1.2, roughness: 0.2 }))
+        ring2.rotation.x = Math.PI / 2
+        ring2.position.y = 0.62
+        g.add(ring2)
+        const well = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.16, 10), new THREE.MeshStandardMaterial({ color: 0x1a1020, roughness: 0.7 }))
+        well.position.y = 0.12
+        g.add(well)
       }
       g.position.set(gx(world.width, i) + 0.5, 0, gy(world.width, i) + 0.5)
       this.scene.add(g)
@@ -560,6 +629,8 @@ export class DungeonView {
     if (k && k.portal >= 0) spots.push({ x: gx(world.width, k.portal) + 0.5, z: gy(world.width, k.portal) + 0.5, color: 0xc070ff, intensity: 1.8 })
     const cx = this.target.x
     const cz = this.target.z
+    const nearTorches = [...this.torchSpots].sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz)).slice(0, 6)
+    for (const torch of nearTorches) spots.push({ x: torch.x, z: torch.z, color: 0xffaa55, intensity: 1.15 })
     let lava = 0
     for (let i = 0; i < world.tiles.length && lava < 4; i++) {
       const t = world.tiles[i]!
@@ -594,6 +665,7 @@ export class DungeonView {
       let group = this.actors.get(c.id)
       if (!group) {
         group = buildCreature(species(c.kind).look)
+        group.traverse((obj) => { obj.castShadow = true; obj.receiveShadow = true })
         group.userData.creatureId = c.id
         group.userData.hp = c.hp
         group.userData.hit = 0
@@ -640,6 +712,15 @@ export class DungeonView {
       if (chick) chick.visible = c.chicken > 0
       const loot = group.getObjectByName('loot')
       if (loot) loot.visible = c.carry === 'gold' || c.carry === 'crate'
+      if ((c.carry === 'gold' || c.carry === 'crate') && group.userData.wasCarry !== c.carry && this.quality !== 'low') {
+        this.fx.burst(c.x, 0.7, c.y, c.carry === 'gold' ? 0xffd56a : 0xc08040, 8, 1.3)
+      }
+      group.userData.wasCarry = c.carry
+      if (c.slap > 7.35 && !group.userData.slapped && this.quality !== 'low') {
+        this.fx.burst(c.x, 0.55, c.y, 0xffe0a0, 7, 2.2)
+        group.userData.slapped = true
+      }
+      if (c.slap < 1) group.userData.slapped = false
       const bar = group.getObjectByName('hp') as THREE.Mesh | null
       if (bar) {
         const ratio = Math.max(0.05, Math.min(1, c.hp / Math.max(1, c.maxHp)))
@@ -670,16 +751,56 @@ export class DungeonView {
     )
   }
 
-  private placeHand(world: World, hover: { x: number; y: number } | null, slapping: boolean): void {
+  private placeHand(world: World, hover: { x: number; y: number } | null, slapping: boolean, holding: number): void {
     if (!hover) {
-      this.hand.visible = false
+      this.claw.group.visible = false
+      this.handShadow.visible = false
       return
     }
-    this.hand.visible = true
+    this.claw.group.visible = true
     const palm = this.cursorPoint(world, hover)
-    this.hand.position.copy(palm)
-    if (slapping) this.hand.position.y -= 0.35
-    this.hand.rotation.set(slapping ? -1.2 : -0.65, this.theta, slapping ? 0.4 : 0.08)
+    this.claw.group.position.copy(palm)
+    if (slapping) this.claw.group.position.y -= 0.45
+    this.claw.group.rotation.set(slapping ? -1.25 : -0.7, this.theta, slapping ? 0.35 : 0.06 + Math.sin(this.clock * 2) * 0.03)
+    poseClaw(this.claw, this.clock, holding, slapping)
+    const floorY = Math.max(0.18, this.column(world, hover.x, hover.y)) + 0.03
+    this.handShadow.visible = true
+    this.handShadow.position.set(hover.x + 0.5, floorY, hover.y + 0.5)
+    const lift = Math.max(0.35, palm.y - floorY)
+    const mat = this.handShadow.material as THREE.MeshBasicMaterial
+    mat.opacity = Math.max(0.12, 0.45 - lift * 0.12)
+    this.handShadow.scale.setScalar(0.7 + lift * 0.15)
+  }
+
+  private decorate(world: World, room: string, owner: number, x: number, z: number): void {
+    const px = x + 0.5
+    const pz = z + 0.5
+    const gold = world.keepers[owner]?.gold ?? 0
+    if (room === 'lair') this.placeProp(px, 0.18, pz, 0.55, 0.1, 0.32, 0x6a3828)
+    else if (room === 'library') this.placeProp(px, 0.42, pz, 0.46, 0.62, 0.16, 0x3d2c22, 0.15)
+    else if (room === 'training') this.placeProp(px, 0.42, pz, 0.16, 0.72, 0.16, 0xd8c4a0)
+    else if (room === 'workshop') this.placeProp(px, 0.24, pz, 0.38, 0.22, 0.24, 0x5a5e68)
+    else if (room === 'prison') this.placeProp(px, 0.48, pz, 0.08, 0.82, 0.62, 0xa8b0b8)
+    else if (room === 'torture') this.placeProp(px, 0.28, pz, 0.62, 0.14, 0.28, 0x6a3030)
+    else if (room === 'temple') this.placeProp(px, 0.14, pz, 0.5, 0.06, 0.5, 0x4068c8)
+    else if (room === 'graveyard') this.placeProp(px, 0.34, pz, 0.16, 0.5, 0.08, 0xc8ccd0)
+    else if (room === 'hatchery') this.placeProp(px, 0.12, pz, 0.42, 0.08, 0.42, 0xe0c888)
+    else if (room === 'treasury') this.placeProp(px, 0.2, pz, 0.26, 0.14 + Math.min(0.34, gold / 18000), 0.22, 0xffd56a)
+    else if (room === 'barracks') this.placeProp(px, 0.2, pz, 0.42, 0.12, 0.18, 0x8a3030)
+    else if (room === 'guard') this.placeProp(px, 0.36, pz, 0.12, 0.62, 0.12, 0xe4e8ee)
+    else if (room === 'scavenger') this.placeProp(px, 0.28, pz, 0.3, 0.36, 0.3, 0x2a6868)
+  }
+
+  private placeProp(x: number, y: number, z: number, sx: number, sy: number, sz: number, color: number, rot = 0): void {
+    if (this.propN >= (this.propMesh.instanceColor?.count ?? 0)) return
+    DUMMY.position.set(x, y, z)
+    DUMMY.scale.set(sx, sy, sz)
+    DUMMY.rotation.set(0, rot, 0)
+    DUMMY.updateMatrix()
+    this.propMesh.setMatrixAt(this.propN, DUMMY.matrix)
+    COLOR.setHex(color)
+    this.propMesh.setColorAt(this.propN, COLOR)
+    this.propN++
   }
 
   private syncChickens(world: World): void {
@@ -725,9 +846,9 @@ interface Parts { legL?: THREE.Group; legR?: THREE.Group; armL?: THREE.Group; ar
 function buildCreature(look: Look): THREE.Group {
   const root = new THREE.Group()
   root.scale.setScalar(look.scale)
-  const bodyMat = new THREE.MeshLambertMaterial({ color: look.color })
-  const accent = new THREE.MeshLambertMaterial({ color: look.accent })
-  const skin = new THREE.MeshLambertMaterial({ color: look.skin })
+  const bodyMat = new THREE.MeshStandardMaterial({ color: look.color, roughness: 0.62, metalness: 0.08 })
+  const accent = new THREE.MeshStandardMaterial({ color: look.accent, roughness: 0.45, metalness: 0.22 })
+  const skin = new THREE.MeshStandardMaterial({ color: look.skin, roughness: 0.7, metalness: 0.02 })
   const parts: Parts = { bodyBase: 0.46 }
   const leg = (x: number) => {
     const p = new THREE.Group()
@@ -820,7 +941,17 @@ function buildCreature(look: Look): THREE.Group {
     parts.armL = arm(-0.2)
     parts.armR = arm(0.2)
     if (look.body === 'imp') {
-      head.scale.setScalar(1.2)
+      head.scale.setScalar(1.25)
+      for (const side of [-1, 1]) {
+        const ear = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.16, 4), skin)
+        ear.position.set(side * 0.14, 0.86, 0)
+        ear.rotation.z = side * 0.8
+        root.add(ear)
+      }
+      const pick = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.36, 0.06), accent)
+      pick.position.set(0.22, 0.42, 0.12)
+      pick.rotation.z = 0.6
+      root.add(pick)
     }
     if (look.body === 'reaper') {
       const hood = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.28, 5), accent)
@@ -861,7 +992,7 @@ function buildCreature(look: Look): THREE.Group {
   chick.position.y = 0.2
   chick.visible = false
   root.add(chick)
-  const loot = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), new THREE.MeshLambertMaterial({ color: 0xffd56a, emissive: 0x6a4200 }))
+  const loot = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffd56a, emissive: 0x8a4a00, emissiveIntensity: 0.5, metalness: 0.8, roughness: 0.3 }))
   loot.name = 'loot'
   loot.position.set(0.16, 0.95, 0.1)
   loot.visible = false
@@ -881,32 +1012,4 @@ function buildCreature(look: Look): THREE.Group {
   root.add(eye)
   root.userData.parts = parts
   return root
-}
-
-function buildHand(): THREE.Group {
-  const g = new THREE.Group()
-  const skin = new THREE.MeshBasicMaterial({ color: 0xff8a1a })
-  const nail = new THREE.MeshBasicMaterial({ color: 0xffe0c4 })
-  const cuff = new THREE.MeshBasicMaterial({ color: 0x6a1020 })
-  const palm = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.18, 0.62), skin)
-  palm.position.set(0, 0, 0.08)
-  g.add(palm)
-  const wrist = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.22, 0.34), cuff)
-  wrist.position.set(0, 0.02, -0.34)
-  g.add(wrist)
-  for (let i = 0; i < 4; i++) {
-    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.1, 0.42), skin)
-    finger.position.set(-0.27 + i * 0.18, 0.04, 0.5)
-    g.add(finger)
-    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.06, 0.1), nail)
-    tip.position.set(-0.27 + i * 0.18, 0.08, 0.72)
-    g.add(tip)
-  }
-  const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.32), skin)
-  thumb.position.set(-0.48, 0.02, 0.16)
-  thumb.rotation.y = 0.7
-  g.add(thumb)
-  g.scale.setScalar(2.05)
-  g.traverse((obj) => { obj.frustumCulled = false })
-  return g
 }

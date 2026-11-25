@@ -12,6 +12,13 @@
   --line: rgba(224, 193, 122, 0.35);
   font-family: Palatino, "Palatino Linotype", Georgia, serif;
 }
+@font-face {
+  font-family: Cinzel;
+  src: url("/fonts/cinzel-latin-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
 
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; height: 100%; background: var(--stone); color: var(--ink); }
@@ -26,9 +33,10 @@ canvas { display: block; width: 100%; height: 100%; }
 #panel {
   width: 318px;
   background:
-    linear-gradient(180deg, rgba(255, 220, 160, 0.05), transparent 80px),
-    var(--panel);
+    radial-gradient(circle at 20% 0%, rgba(180, 40, 50, 0.16), transparent 42%),
+    linear-gradient(180deg, #2a211c, #140f0c 28%, #1b1512);
   border-left: 1px solid var(--line);
+  box-shadow: inset 8px 0 0 #3a2a18, inset 9px 0 0 rgba(224, 193, 122, 0.45);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -47,8 +55,9 @@ canvas { display: block; width: 100%; height: 100%; }
   box-shadow: 0 0 18px rgba(180, 40, 50, 0.45);
   flex: none;
 }
-.kicker { color: var(--gold); letter-spacing: 0.16em; font-size: 11px; text-transform: uppercase; }
-#gold { font-size: 28px; line-height: 1; font-variant-numeric: tabular-nums; }
+.kicker { color: var(--gold); letter-spacing: 0.18em; font-size: 11px; text-transform: uppercase; font-family: Cinzel, Palatino, serif; }
+#gold { font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; font-family: Cinzel, Palatino, serif; color: #f0d48a; text-shadow: 0 0 12px rgba(224, 160, 60, 0.35); }
+h1, h2, #levelname, .card b { font-family: Cinzel, Palatino, serif; }
 #goldcap, #heartline { color: var(--muted); font-size: 12px; }
 
 #minimap {
@@ -122,7 +131,10 @@ canvas { display: block; width: 100%; height: 100%; }
   color: var(--ink);
   padding: 2px 0;
 }
-.speed { display: flex; gap: 4px; margin-left: auto; }
+.speed, .quality { display: flex; gap: 4px; }
+.speed { margin-left: auto; }
+.quality button.on, .speed button.on { border-color: var(--gold); color: var(--gold); }
+.ico { width: 16px; height: 16px; display: block; margin-bottom: 4px; fill: none; stroke: var(--gold); stroke-width: 1.4; }
 #dragbox {
   position: absolute;
   border: 1px solid var(--gold);

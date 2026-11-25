@@ -3,6 +3,7 @@ import { GEAR, RESEARCH, ROOMS, SPECIES, SPELLS } from './data/content.ts'
 import lines from './audio/lines.json' with { type: 'json' }
 import { AudioBus } from './audio/bus.ts'
 import { DungeonView } from './render/view.ts'
+import { readQuality, type Quality } from './render/look.ts'
 import {
   castSpell,
   countKind,
@@ -49,6 +50,7 @@ export class Game {
   private noteCursor = 0
   private uiAcc = 0
   private tab: 'rooms' | 'spells' | 'workshop' | 'creatures' = 'rooms'
+  private quality: Quality = readQuality()
   private pointer = { x: 0, y: 0 }
 
   constructor(root: HTMLElement) {
@@ -182,6 +184,11 @@ export class Game {
             <button data-speed="2">2×</button>
             <button data-speed="3">3×</button>
           </div>
+          <div class="quality" id="quality">
+            <button data-q="low">Low</button>
+            <button data-q="medium">Med</button>
+            <button data-q="high">High</button>
+          </div>
         </div>
         <div id="bottomline">
           <div class="chip" id="messages"></div>
@@ -211,6 +218,7 @@ export class Game {
     this.view = new DungeonView(canvas)
     const heart = world.keepers[1]!.heart
     this.view.focus(heart % world.width, (heart / world.width) | 0, 22)
+    this.view.setQuality(this.quality)
     this.bindPlay(canvas)
     this.show('play')
     this.refreshUi(true)
@@ -222,6 +230,14 @@ export class Game {
     const stage = this.root.querySelector('#stage')!
     stage.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((btn) => {
       btn.onclick = () => { this.speed = Number(btn.dataset.speed); this.refreshUi(true) }
+    })
+    stage.querySelectorAll<HTMLButtonElement>('[data-q]').forEach((btn) => {
+      btn.onclick = () => {
+        this.quality = btn.dataset.q as Quality
+        localStorage.setItem('underlord-quality', this.quality)
+        this.view?.setQuality(this.quality)
+        this.refreshUi(false)
+      }
     })
     stage.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((btn) => {
       btn.onclick = () => { this.tab = btn.dataset.tab as typeof this.tab; this.refreshUi(true); this.audio.play('ui') }
@@ -592,6 +608,9 @@ export class Game {
     this.root.querySelectorAll('#stage [data-speed]').forEach((btn) => {
       btn.classList.toggle('on', Number((btn as HTMLButtonElement).dataset.speed) === this.speed)
     })
+    this.root.querySelectorAll('#quality button').forEach((btn) => {
+      btn.classList.toggle('on', (btn as HTMLButtonElement).dataset.q === this.quality)
+    })
     this.root.querySelectorAll('#tabs button').forEach((btn) => {
       btn.classList.toggle('on', (btn as HTMLButtonElement).dataset.tab === this.tab)
     })
@@ -610,7 +629,7 @@ export class Game {
       return Object.values(ROOMS).map((room) => {
         const locked = !k.unlocked.includes(room.id)
         const on = this.tool.kind === 'room' && this.tool.id === room.id
-        return `<button class="card ${on ? 'on' : ''}" data-kind="room" data-id="${room.id}" ${locked ? 'disabled' : ''}><b>${room.name}</b><span class="cost">${room.cost} gold</span><small>${locked ? 'Research it' : `${countRoom(world, 1, room.id)} tile${countRoom(world, 1, room.id) === 1 ? '' : 's'}`}</small></button>`
+        return `<button class="card ${on ? 'on' : ''}" data-kind="room" data-id="${room.id}" ${locked ? 'disabled' : ''}>${mark(room.id)}<b>${room.name}</b><span class="cost">${room.cost} gold</span><small>${locked ? 'Research it' : `${countRoom(world, 1, room.id)} tile${countRoom(world, 1, room.id) === 1 ? '' : 's'}`}</small></button>`
       }).join('')
     }
     if (this.tab === 'spells') {
@@ -712,6 +731,26 @@ export class Game {
     const line = this.root.querySelector('#mentor-line')
     if (line) line.textContent = text
   }
+}
+
+function mark(id: string): string {
+  const paths: Record<string, string> = {
+    treasury: 'M3 12 L8 4 L13 12 Z',
+    lair: 'M2 11 H14 V13 H2 Z M4 11 V7 H12 V11',
+    hatchery: 'M8 3 A4 4 0 1 0 8 11 A3 3 0 1 1 8 3',
+    training: 'M8 2 V14 M4 6 H12',
+    library: 'M3 3 H7 V13 H3 Z M9 3 H13 V13 H9 Z',
+    workshop: 'M3 11 H13 V13 H3 Z M5 11 V6 H11 V11',
+    prison: 'M3 3 V13 M7 3 V13 M11 3 V13 M2 4 H14 M2 12 H14',
+    torture: 'M3 12 H13 M8 4 V12',
+    barracks: 'M2 12 L8 3 L14 12 Z',
+    guard: 'M8 2 L13 5 V10 L8 14 L3 10 V5 Z',
+    temple: 'M8 2 L14 8 L8 14 L2 8 Z',
+    graveyard: 'M8 2 V8 M5 5 H11 M6 8 H10 V14 H6 Z',
+    scavenger: 'M3 8 A5 5 0 1 0 13 8',
+    bridge: 'M2 10 Q8 2 14 10',
+  }
+  return `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="${paths[id] ?? 'M2 2 H14 V14 H2 Z'}"/></svg>`
 }
 
 function readProgress(): Record<string, string> {

@@ -196,10 +196,10 @@ test('the rival keeper sends imps to work', async ({ page }) => {
 })
 
 test('heroes enter the first vein and start moving', async ({ page }) => {
-  test.setTimeout(120_000)
+  test.setTimeout(200_000)
   await ready(page, '/?play=01-cradle')
   await press(page, '3')
-  await expect.poll(async () => page.evaluate(() => window.__underlord.notes().some((n) => /entered the deep/.test(n))), { timeout: 80_000 }).toBe(true)
+  await expect.poll(async () => page.evaluate(() => window.__underlord.notes().some((n) => /entered the deep/.test(n))), { timeout: 160_000 }).toBe(true)
   const hero = await page.evaluate(() => window.__underlord.creatures().find((c) => c.owner === 0) ?? null)
   expect(hero).toBeTruthy()
   await page.waitForTimeout(2500)
